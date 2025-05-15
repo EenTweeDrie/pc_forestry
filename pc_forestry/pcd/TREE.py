@@ -2,12 +2,13 @@ from .PCD import PCD
 import numpy as np
 import torch
 import numpy as np
-from predictmdl.models.pointnet2_cls_ssg import get_model
-import predictmdl.utils.pointcloud_utils as pcu
+from predict.models.pointnet2_cls_ssg import get_model
+import predict.utils.pointcloud_utils as pcu
 import pandas as pd
 import circle_fit as cf
 import statistics
 from .PCD_UTILS import PCD_UTILS
+from ..utils.fps import farthest_point_sample
 from scipy.spatial import ConvexHull
 from sklearn.cluster import DBSCAN
 
@@ -21,12 +22,12 @@ logger = logging.getLogger(__name__)
 
 
 def angle_between_vectors(vector1, vector2):
-    v1 = [vector1[1][0] - vector1[0][0], 
+    v1 = [vector1[1][0] - vector1[0][0],
           vector1[1][1] - vector1[0][1],
           vector1[1][2] - vector1[0][2]]
 
-    v2 = [vector2[1][0] - vector2[0][0], 
-          vector2[1][1] - vector2[0][1], 
+    v2 = [vector2[1][0] - vector2[0][0],
+          vector2[1][1] - vector2[0][1],
           vector2[1][2] - vector2[0][2]]
 
     # Вычисляем скалярное произведение
@@ -44,24 +45,6 @@ def angle_between_vectors(vector1, vector2):
     angle_deg = np.degrees(angle_rad)
 
     return angle_deg
-
-
-def farthest_point_sample(xyz, npoint):
-    device = xyz.device
-    batchsize, ndataset, dimension = xyz.shape
-    centroids = torch.zeros(batchsize, npoint, dtype=torch.long).to(device)
-    distance = torch.ones(batchsize, ndataset).to(device) * 1e10
-    farthest = torch.randint(0, ndataset, (batchsize,),
-                             dtype=torch.long).to(device)
-    batch_indices = torch.arange(batchsize, dtype=torch.long).to(device)
-    for i in range(npoint):
-        centroids[:, i] = farthest
-        centroid = xyz[batch_indices, farthest, :].view(batchsize, 1, 3)
-        dist = torch.sum((xyz - centroid) ** 2, -1)
-        mask = dist < distance
-        distance[mask] = dist[mask]
-        farthest = torch.max(distance, -1)[1]
-    return centroids
 
 
 def predict_cluster(cluster, device):
@@ -118,7 +101,6 @@ class TREE(PCD):
         self.trunk_slice: PCD = None
         self.custom_coordinate = None
 
-
     @classmethod
     def init_from_pcd(cls, pc: PCD) -> None:
         """ initialize tree from PCD object """
@@ -131,7 +113,7 @@ class TREE(PCD):
             illuminance=pc.illuminance,
         )
         return instance
-    
+
     @classmethod
     def read(cls, file_path: str, verbose: bool = False) -> 'PCD':
         instance = cls()
@@ -232,9 +214,9 @@ class TREE(PCD):
                    illuminance=self.illuminance)
 
     def estimate_diameter(self,
-                          num_layers: int = 10, 
-                          koef: float = 1.05, 
-                          low: float = 1.3, 
+                          num_layers: int = 10,
+                          koef: float = 1.05,
+                          low: float = 1.3,
                           high: float = 1.4
                           ) -> None:
         """ estimate the diameter of the tree """
@@ -255,8 +237,8 @@ class TREE(PCD):
             points_layer_i = r_points[idx_labels]
 
             try:
-                xc, yc, r, _ = cf.least_squares_circle(points_layer_i)
-                xc, yc, rh, _ = cf.hyper_fit(points_layer_i)
+                xc, yc, r, _ = cf.standardLSQ(points_layer_i)
+                xc, yc, rh, _ = cf.hyperLSQ(points_layer_i)
             except:
                 xc, yc, r, _ = 0, 0, 0, 0
                 xc, yc, rh, _ = 0, 0, 0, 0
@@ -266,11 +248,11 @@ class TREE(PCD):
         if len(r_list) == 0:
             for i in range(num_layers):
                 idx_labels = np.where(
-                    (self.trunk_slice.points[:, 2] >= i*layer+z_min) & 
+                    (self.trunk_slice.points[:, 2] >= i*layer+z_min) &
                     (self.trunk_slice.points[:, 2] < (i+1)*layer+z_min))
                 points_layer_i = self.trunk_slice.points[idx_labels]
             try:
-                xc, yc, r, _ = cf.least_squares_circle(points_layer_i)
+                xc, yc, r, _ = cf.standardLSQ(points_layer_i)
             except:
                 xc, yc, r, _ = 0, 0, 0, 0
             r_list.append(r)
@@ -278,11 +260,11 @@ class TREE(PCD):
         if len(rh_list) == 0:
             for i in range(num_layers):
                 idx_labels = np.where(
-                    (self.trunk_slice.points[:, 2] >= i*layer+z_min) & 
+                    (self.trunk_slice.points[:, 2] >= i*layer+z_min) &
                     (self.trunk_slice.points[:, 2] < (i+1)*layer+z_min))
                 points_layer_i = self.trunk_slice.points[idx_labels]
             try:
-                xc, yc, rh, _ = cf.hyper_fit(points_layer_i)
+                xc, yc, rh, _ = cf.hyperLSQ(points_layer_i)
             except:
                 xc, yc, rh, _ = 0, 0, 0, 0
             rh_list.append(rh)
@@ -294,13 +276,13 @@ class TREE(PCD):
         rh_median = min(rh_list)
 
         idx_labels = np.where(
-            (r_points[:, 2] >= min(self.trunk_slice.points[:, 2])+low) & 
+            (r_points[:, 2] >= min(self.trunk_slice.points[:, 2])+low) &
             (r_points[:, 2] < min(self.trunk_slice.points[:, 2])+high))
         points_layer_i = r_points[idx_labels]
 
         try:
-            xc, yc, r, _ = cf.least_squares_circle(points_layer_i)
-            xc, yc, rh, _ = cf.hyper_fit(points_layer_i)
+            xc, yc, r, _ = cf.standardLSQ(points_layer_i)
+            xc, yc, rh, _ = cf.hyperLSQ(points_layer_i)
         except:
             xc, yc, r, _ = 0, 0, 0, 0
             xc, yc, rh, _ = 0, 0, 0, 0
@@ -323,10 +305,11 @@ class TREE(PCD):
             rh_median = check_r_median
 
         breast_diameter_tree = 100 * float(PCD_UTILS.toFixed(r_median*2, 4))
-        breast_diameter_tree_hyper = 100 * float(PCD_UTILS.toFixed(rh_median*2, 4))
-        breast_diameter_tree = float(PCD_UTILS.toFixed(breast_diameter_tree, 2))
-        breast_diameter_tree_hyper = float(PCD_UTILS.toFixed(breast_diameter_tree_hyper, 2))
-        
+        breast_diameter_tree_hyper = 100 * \
+            float(PCD_UTILS.toFixed(rh_median*2, 4))
+        breast_diameter_tree = float(f"{breast_diameter_tree:.2f}")
+        breast_diameter_tree_hyper = float(f"{breast_diameter_tree_hyper:.2f}")
+
         self.diameter_LS = breast_diameter_tree
         self.diameter_HLS = breast_diameter_tree_hyper
 
@@ -340,26 +323,31 @@ class TREE(PCD):
 
         # Find the center of the circle at a height of 0.3 meters
         idx_labels_0_3 = np.where(
-            (self.trunk_slice.points[:, 2] >= z_min + low_height) & 
+            (self.trunk_slice.points[:, 2] >= z_min + low_height) &
             (self.trunk_slice.points[:, 2] < high_height + z_min + low_height)
-            )
+        )
         points_layer_0_3 = self.trunk_slice.points[idx_labels_0_3]
-        xc_circle, yc_circle, _, _ = cf.least_squares_circle(points_layer_0_3)
+        xc_circle, yc_circle, _, _ = cf.standardLSQ(points_layer_0_3)
 
         # Find the center of mass of points at a height of up to high_height=0.75 meters
-        idx_labels_0_75 = np.where(self.trunk_slice.points[:, 2] < high_height + z_min)
+        idx_labels_0_75 = np.where(
+            self.trunk_slice.points[:, 2] < high_height + z_min)
         points_layer_0_75 = self.trunk_slice.points[idx_labels_0_75]
-        xc_mass, yc_mass = np.mean(points_layer_0_75[:, 0]), np.mean(points_layer_0_75[:, 1])
+        xc_mass, yc_mass = np.mean(points_layer_0_75[:, 0]), np.mean(
+            points_layer_0_75[:, 1])
 
         # Select the coordinate depending on the distance between the centers
-        distance = np.sqrt((xc_circle - xc_mass) ** 2 + (yc_circle - yc_mass) ** 2)
+        distance = np.sqrt((xc_circle - xc_mass) ** 2 +
+                           (yc_circle - yc_mass) ** 2)
         if distance > error_threshold:
             # logger.info(f'Choose the center of mass')
-            coordinate = [xc_mass, yc_mass, (high_height-low_height)/2+low_height+z_min]
+            coordinate = [xc_mass, yc_mass,
+                          (high_height-low_height)/2+low_height+z_min]
         else:
             # logger.info(f'Choose the center of the circle')
-            coordinate = [xc_circle, yc_circle, (high_height-low_height)/2+low_height+z_min]
-        
+            coordinate = [xc_circle, yc_circle,
+                          (high_height-low_height)/2+low_height+z_min]
+
         if low_height == 0:
             # logger.info(f'Default coordinate: {coordinate}')
             self.coordinate = coordinate
@@ -372,16 +360,16 @@ class TREE(PCD):
         if self.coordinate is None:
             self.estimate_coordinate()
         if self.custom_coordinate is None:
-            self.estimate_coordinate(low_height = 1, high_height = 1.6)
+            self.estimate_coordinate(low_height=1, high_height=1.6)
         vector1 = [self.coordinate, self.custom_coordinate]
         vector2 = [self.coordinate,
                    [self.coordinate[0], self.coordinate[1], self.custom_coordinate[2]]]
         return angle_between_vectors(vector1, vector2)
-    
+
     def get_tan_angle(self):
         """ calculate the tangent of the angle of the tree """
         return np.tan(np.radians(self.get_angle()))
-    
+
     def get_cos_angle(self):
         """ calculate the cosine of the angle of the tree """
         return np.cos(np.radians(self.get_angle()))
@@ -390,7 +378,7 @@ class TREE(PCD):
         pcd_to_show = []
 
         if self.custom_coordinate is None:
-            self.estimate_coordinate(low_height = 1, high_height = 1.6)
+            self.estimate_coordinate(low_height=1, high_height=1.6)
 
         if self.diameter_LS is None:
             self.estimate_diameter()
@@ -398,10 +386,11 @@ class TREE(PCD):
         if self.trunk_slice:
             z_min = min(self.trunk_slice.points[:, 2])
             trunk_slice_pcd = o3d.geometry.PointCloud()
-            trunk_slice_pcd.points = o3d.utility.Vector3dVector(self.trunk_slice.points)
+            trunk_slice_pcd.points = o3d.utility.Vector3dVector(
+                self.trunk_slice.points)
             pcd_to_show.append(trunk_slice_pcd)
 
-            if self.diameter_LS and self.coordinate:    
+            if self.diameter_LS and self.coordinate:
                 # Display the diameter as a circle at a height of 1.3 meters
                 circle_center = self.custom_coordinate
                 circle_radius = self.diameter_LS / 2 / 100  # convert to meters
@@ -410,7 +399,7 @@ class TREE(PCD):
                     x = circle_center[0] + circle_radius * np.cos(angle)
                     y = circle_center[1] + circle_radius * np.sin(angle)
                     circle_points.append([x, y, circle_center[2]])
-                circle_points = np.array(circle_points)  
+                circle_points = np.array(circle_points)
                 # Create a point cloud for the circle
                 circle_pcd = o3d.geometry.PointCloud()
                 circle_pcd.points = o3d.utility.Vector3dVector(circle_points)
@@ -419,14 +408,14 @@ class TREE(PCD):
 
             if self.coordinate:
                 # Display the coordinate as a thick point at a height of 0 meters
-                coordinate_point = [self.coordinate[0], self.coordinate[1], z_min]
+                coordinate_point = [self.coordinate[0],
+                                    self.coordinate[1], z_min]
                 coordinate_pcd = o3d.geometry.PointCloud()
-                coordinate_pcd.points = o3d.utility.Vector3dVector([coordinate_point])
+                coordinate_pcd.points = o3d.utility.Vector3dVector(
+                    [coordinate_point])
                 coordinate_pcd.paint_uniform_color([0, 1, 0])  # green color
                 pcd_to_show.append(coordinate_pcd)
-            
+
             o3d.visualization.draw_geometries(pcd_to_show)
         else:
             return ValueError("No trunk slice found")
-        
-        

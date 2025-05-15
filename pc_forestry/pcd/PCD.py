@@ -1,12 +1,10 @@
 import torch
 import numpy as np
-import pprint
 from time import time
-from .PCD_UTILS import PCD_UTILS
+from ..utils import pypcd, fps
 import open3d as o3d
 import laspy
 import pyvista
-from pypcd import pypcd
 import h5py
 import pandas as pd
 import copy
@@ -599,7 +597,7 @@ class PCD:
         np_points = np.asarray([self.points])
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         points_torch = torch.Tensor(np_points).to(device)
-        centroids = PCD_UTILS.farthest_point_sample(points_torch, num_sample)
+        centroids = fps.farthest_point_sample(points_torch, num_sample)
         pt_sampled = points_torch[0][centroids[0]]
         centroids = centroids.cpu().data.numpy()
         self.intensity = self.intensity[centroids[0]]
