@@ -1,0 +1,16 @@
+[tool.poetry]
+name = "pc-forestry"
+version = "0.1.0"
+description = ""
+authors = ["EenTweeDrie <eentweedrie@yandex.ru>"]
+license = "MIT"
+readme = "README.md"
+packages = [{include = "pc_forestry"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
