@@ -2,23 +2,20 @@ from .PCD import PCD
 import numpy as np
 import torch
 import numpy as np
-from predict.models.pointnet2_cls_ssg import get_model
-import predict.utils.pointcloud_utils as pcu
+from ..predict.models.pointnet2_cls_ssg import get_model
+from ..predict.utils import pointcloud_utils as pcu
 import pandas as pd
 import circle_fit as cf
 import statistics
-from .PCD_UTILS import PCD_UTILS
 from ..utils.fps import farthest_point_sample
 from scipy.spatial import ConvexHull
 from sklearn.cluster import DBSCAN
 
 import hdbscan
 from sklearn.neighbors import LocalOutlierFactor
-import logging
+from loguru import logger
 import open3d as o3d
-
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger(__name__)
+import os
 
 
 def angle_between_vectors(vector1, vector2):
@@ -50,7 +47,8 @@ def angle_between_vectors(vector1, vector2):
 def predict_cluster(cluster, device):
     """ predict the cluster """
     model_name = 'int0000_7000-512-rlish-s4762'
-    model_path = 'predictmdl/checkpoints/' + model_name + '/models/model.t7'
+    model_path = os.path.join(os.path.dirname(__file__),
+                              '..', 'predict', 'checkpoints', model_name, 'models', 'model.t7')
     species_names = ['Trunk', 'Not_Trunk']
 
     points = torch.Tensor([cluster]).to(device)
@@ -62,7 +60,7 @@ def predict_cluster(cluster, device):
     NUM_CLASSES = len(int2name)
 
     model = get_model(NUM_CLASSES, normal_channel=False).to(device)
-    model.load_state_dict(torch.load(model_path))
+    model.load_state_dict(torch.load(model_path, map_location=device))
     model = model.eval()
     data = torch.tensor(X_test, device=device)
     data = data.permute(0, 2, 1)
@@ -158,6 +156,8 @@ class TREE(PCD):
             # Step 3: Predict the cluster
             probabilities = []
             clusters_indices = []
+            # debug
+            cluser_points = []
 
             for i in list(set(cluster_labels)):
                 if i == -1:
@@ -166,12 +166,15 @@ class TREE(PCD):
                 if cluster.shape[0] > 100:
                     probabilities.append(predict_cluster(cluster, device))
                     clusters_indices.append(i)
+                    # debug
+                    cluser_points.append(cluster.shape[0])
 
             # Step 4: Sort the clusters by probability
             pdf = pd.DataFrame(
-                {'probability': probabilities, 'cluster_index': clusters_indices})
+                {'probability': probabilities, 'cluster_index': clusters_indices, 'points': cluser_points})
             pdf = pdf.sort_values(by='probability', ascending=False)
             pdf = pdf.reset_index(drop=True)
+            logger.debug(pdf)
 
             # Step 5: Get the best cluster
             best_index = None
@@ -183,6 +186,8 @@ class TREE(PCD):
                     if max(choosen_cluster[:, 2]) - min(choosen_cluster[:, 2]) > height_threshold/2:
                         if min(choosen_cluster[:, 2]) - min(lower_points[:, 2]) < 0.25:
                             best_index = choosen_index
+                            logger.debug(
+                                f'Best cluster is {best_index} with {choosen_cluster.shape[0]} points')
                             break
 
             # Step 6: Cut the trunk slice
@@ -203,7 +208,7 @@ class TREE(PCD):
 
         except Exception as e:
             logger.exception(
-                "An error occurred while finding the trunk cluster: %s", e)
+                "An error occurred while finding the trunk cluster: {}", e)
 
     def clone_like_pcd(self):
         return PCD(points=self.points,
@@ -237,8 +242,8 @@ class TREE(PCD):
             points_layer_i = r_points[idx_labels]
 
             try:
-                xc, yc, r, _ = cf.standardLSQ(points_layer_i)
-                xc, yc, rh, _ = cf.hyperLSQ(points_layer_i)
+                xc, yc, r, _ = cf.standardLSQ(points_layer_i[:, :2])
+                xc, yc, rh, _ = cf.hyperLSQ(points_layer_i[:, :2])
             except:
                 xc, yc, r, _ = 0, 0, 0, 0
                 xc, yc, rh, _ = 0, 0, 0, 0
@@ -252,7 +257,7 @@ class TREE(PCD):
                     (self.trunk_slice.points[:, 2] < (i+1)*layer+z_min))
                 points_layer_i = self.trunk_slice.points[idx_labels]
             try:
-                xc, yc, r, _ = cf.standardLSQ(points_layer_i)
+                xc, yc, r, _ = cf.standardLSQ(points_layer_i[:, :2])
             except:
                 xc, yc, r, _ = 0, 0, 0, 0
             r_list.append(r)
@@ -264,7 +269,7 @@ class TREE(PCD):
                     (self.trunk_slice.points[:, 2] < (i+1)*layer+z_min))
                 points_layer_i = self.trunk_slice.points[idx_labels]
             try:
-                xc, yc, rh, _ = cf.hyperLSQ(points_layer_i)
+                xc, yc, rh, _ = cf.hyperLSQ(points_layer_i[:, :2])
             except:
                 xc, yc, rh, _ = 0, 0, 0, 0
             rh_list.append(rh)
@@ -281,8 +286,8 @@ class TREE(PCD):
         points_layer_i = r_points[idx_labels]
 
         try:
-            xc, yc, r, _ = cf.standardLSQ(points_layer_i)
-            xc, yc, rh, _ = cf.hyperLSQ(points_layer_i)
+            xc, yc, r, _ = cf.standardLSQ(points_layer_i[:, :2])
+            xc, yc, rh, _ = cf.hyperLSQ(points_layer_i[:, :2])
         except:
             xc, yc, r, _ = 0, 0, 0, 0
             xc, yc, rh, _ = 0, 0, 0, 0
@@ -298,15 +303,14 @@ class TREE(PCD):
         x_max, y_max, z_max = self.trunk_slice.points.max(axis=0)
         check_r_median = ((x_max - x_min) + (y_max - y_min))/4
         if (r_median > 0.65) or (r_median > 2.1*check_r_median) or (r_median == 0.0):
-            logger.info(f'Fallback1')
+            logger.info('Fallback1')
             r_median = check_r_median
         if (rh_median > 0.65) or (rh_median > 2.1*check_r_median) or (rh_median == 0.0):
-            logger.info(f'Fallback2')
+            logger.info('Fallback2')
             rh_median = check_r_median
 
-        breast_diameter_tree = 100 * float(PCD_UTILS.toFixed(r_median*2, 4))
-        breast_diameter_tree_hyper = 100 * \
-            float(PCD_UTILS.toFixed(rh_median*2, 4))
+        breast_diameter_tree = 100 * float(f"{r_median*2:.2f}")
+        breast_diameter_tree_hyper = 100 * float(f"{rh_median*2:.2f}")
         breast_diameter_tree = float(f"{breast_diameter_tree:.2f}")
         breast_diameter_tree_hyper = float(f"{breast_diameter_tree_hyper:.2f}")
 
@@ -327,7 +331,7 @@ class TREE(PCD):
             (self.trunk_slice.points[:, 2] < high_height + z_min + low_height)
         )
         points_layer_0_3 = self.trunk_slice.points[idx_labels_0_3]
-        xc_circle, yc_circle, _, _ = cf.standardLSQ(points_layer_0_3)
+        xc_circle, yc_circle, _, _ = cf.standardLSQ(points_layer_0_3[:, :2])
 
         # Find the center of mass of points at a height of up to high_height=0.75 meters
         idx_labels_0_75 = np.where(

@@ -1066,6 +1066,8 @@ files = [
 ]
 
 [package.dependencies]
+laszip = {version = ">=0.2.1,<0.3.0", optional = true, markers = "extra == \"laszip\""}
+lazrs = {version = ">=0.6.0,<0.7.0", optional = true, markers = "extra == \"lazrs\""}
 numpy = "*"
 
 [package.extras]
@@ -1075,6 +1077,113 @@ laszip = ["laszip (>=0.2.1,<0.3.0)"]
 lazrs = ["lazrs (>=0.6.0,<0.7.0)"]
 pyproj = ["pyproj"]
 requests = ["requests"]
+
+[[package]]
+name = "laszip"
+version = "0.2.3"
+description = "Bindings for LASzip made with pybind11"
+category = "main"
+optional = false
+python-versions = ">=3.7"
+files = [
+    {file = "laszip-0.2.3-cp310-cp310-macosx_12_0_x86_64.whl", hash = "sha256:da16027955d1a70d56b90713f3dccbb3c3f370707b05a4089381405e79ba47f0"},
+    {file = "laszip-0.2.3-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:bc87917e2f2f0545c94afc384afd0232af43867a3a75396960a20696c0fcb95e"},
+    {file = "laszip-0.2.3-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:b46c4eba3bacc02c0453bdc9bd6eddb3072395adbc5b1c63193833121fde9859"},
+    {file = "laszip-0.2.3-cp310-cp310-win_amd64.whl", hash = "sha256:16341d8f8cf994683f9c3e0b40255e129ecfbe110605de2ca80f2e95626a635b"},
+    {file = "laszip-0.2.3-cp311-cp311-macosx_12_0_x86_64.whl", hash = "sha256:872d4c840760554415b79ab9d6a1fd83c36f17605db8156875d5386ffa0f5d09"},
+    {file = "laszip-0.2.3-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:adb7da17b739713653dfc63daa34597af3eb25b486b4d60bd05f2756682f3c09"},
+    {file = "laszip-0.2.3-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:3f287138b84dad7ce10ac539daa293ae707d5859db605da12c1a1264f7e865d7"},
+    {file = "laszip-0.2.3-cp311-cp311-win_amd64.whl", hash = "sha256:ed006321daeaec0c6d0dd431463a62ab272f7c2cfbed33ff6f2684b93aa4743e"},
+    {file = "laszip-0.2.3-cp312-cp312-macosx_12_0_x86_64.whl", hash = "sha256:04fc4a51f5941d49eb683f2673b8d83a07efd83677740ae76816ba98385220b0"},
+    {file = "laszip-0.2.3-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:6956b65be8fb340bd772c7c5be8f7c488a7e03469950c896caa141c6ccbe501a"},
+    {file = "laszip-0.2.3-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:45a1fa7428a5dd6505fd05914f4facbd1836fcdcbaf18ca7c53b0a2986c79646"},
+    {file = "laszip-0.2.3-cp312-cp312-win_amd64.whl", hash = "sha256:e3926ba30ce009e3734c06c32ba2968e26bde04f352abcb80d96fb06f4ddd26a"},
+    {file = "laszip-0.2.3-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:d2307860817868fe59ad9fa39e1ee5608a1d40eca7763508eb0e9659dad67f54"},
+    {file = "laszip-0.2.3-cp313-cp313-macosx_11_0_x86_64.whl", hash = "sha256:41b821865be88be7c774f3bcae61253ac2d40d8de70c9a51f1fce1f9b0496456"},
+    {file = "laszip-0.2.3-cp313-cp313-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:55590ad3cb6f8c3dbca29e3217c10dc4399281b5ee70043d6e8d32f3d1ecd3fc"},
+    {file = "laszip-0.2.3-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:4427385d9e42a8cf3138b57d31ee4cca9f1234b79295462fe73e857d7de2efe9"},
+    {file = "laszip-0.2.3-cp313-cp313-musllinux_1_2_i686.whl", hash = "sha256:3a8054ecfb7243bcd273ea79bcffc02e356ae615933a04ab091087319362c8c7"},
+    {file = "laszip-0.2.3-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:02aa28613c063e90e20cd8258e586d3ada7a75cd127aa598c2fb79d59e0d44c7"},
+    {file = "laszip-0.2.3-cp313-cp313-win_amd64.whl", hash = "sha256:f4043ed6e98226a7bb87646d0789d0ff04842a89eac4ff1f4b0bd96b3844a848"},
+    {file = "laszip-0.2.3-cp37-cp37m-macosx_10_16_x86_64.whl", hash = "sha256:7d5935263ed097f991774a49afc6eba114c64a39e7ab4ddf3efb191e15b9aa24"},
+    {file = "laszip-0.2.3-cp37-cp37m-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:20e7c1243c7ddfb54512a94fa6df9116d4041a359bc4e7fa27f8220c08dad787"},
+    {file = "laszip-0.2.3-cp37-cp37m-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:7e6fc9ea8fbf5458ce8577adf41e122250176ed0aa1fb8d35bb7d54a94fdcec3"},
+    {file = "laszip-0.2.3-cp37-cp37m-win_amd64.whl", hash = "sha256:85b3d18f874ae6ee32da5d540dd48bf755414533b583ed76041a6a6e99e84819"},
+    {file = "laszip-0.2.3-cp38-cp38-macosx_10_16_x86_64.whl", hash = "sha256:3b78d9eee3b367b277f569d4e5507f1333b557d02c8843b34c04f6255ed95233"},
+    {file = "laszip-0.2.3-cp38-cp38-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:8886d0cd24bad94afa7cf5cd6f4bff6cf33993ed3e76dccf06f1812a298f9d6a"},
+    {file = "laszip-0.2.3-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:6d4c6d2ca396da92d150b48c02c2ea5f2be958058acc2aadd3bdfc818b556cc4"},
+    {file = "laszip-0.2.3-cp38-cp38-win_amd64.whl", hash = "sha256:077499833b440929fc36234f06789fc55b30d982c4818060858172587b715b51"},
+    {file = "laszip-0.2.3-cp39-cp39-macosx_12_0_x86_64.whl", hash = "sha256:245d77171946299af0ba8727b39f1af458905ce4d023d693fbbe5862da01d6ec"},
+    {file = "laszip-0.2.3-cp39-cp39-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:e11316e22eccbb1ac67cb0b43656222134bc3984217bb81dd181d4aca7f7cc1d"},
+    {file = "laszip-0.2.3-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:193f92007380d65d6e9e453081752800a9710e46580aac79bf0e769639323fc1"},
+    {file = "laszip-0.2.3-cp39-cp39-win_amd64.whl", hash = "sha256:96cb7f7a99a45d0a2a501527bba49dcc8fc396b521146ff16504d60305058324"},
+    {file = "laszip-0.2.3-pp37-pypy37_pp73-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:5c757034a7f9921790d47c68483979df46b110998524a075ad13e555dec7a8e4"},
+    {file = "laszip-0.2.3-pp37-pypy37_pp73-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:728c00fb99cee87c04852ba636472ae8e98c58b72c1a04d6e289721fee563807"},
+    {file = "laszip-0.2.3-pp38-pypy38_pp73-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:e6ea1dd53bb16432a478f26bfa468aa6724e13c16a9703ee9509835deeecd345"},
+    {file = "laszip-0.2.3-pp38-pypy38_pp73-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:e1830133aebfd8ce0e748279a714b955bccefa8898321732291d63e4df75681a"},
+    {file = "laszip-0.2.3-pp39-pypy39_pp73-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:3b23486ac7e7d2d395c964d014b36d02ece0a22032f1ca77d3fb48d5fbefab5e"},
+    {file = "laszip-0.2.3-pp39-pypy39_pp73-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:95e7d95363be770790da24b6082635c57b40edce262237f730e54b8180e60f5c"},
+    {file = "laszip-0.2.3.tar.gz", hash = "sha256:2be812370b941176f18eff94dd230b8c183c9a3b94603c10197401625f3f809f"},
+]
+
+[[package]]
+name = "lazrs"
+version = "0.6.3"
+description = "Python bindings for laz-rs"
+category = "main"
+optional = false
+python-versions = "*"
+files = [
+    {file = "lazrs-0.6.3-cp310-cp310-macosx_10_12_x86_64.whl", hash = "sha256:738aa5fa063eb144306f2318a2be066aff28d6e6ca16ce79f2552ceab27241e6"},
+    {file = "lazrs-0.6.3-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:b5ef670278da7b00a1f1b493d36d2aff30fbd153fbb3bad94aa7a13c9c9e64aa"},
+    {file = "lazrs-0.6.3-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:1dde413bf0e42d0dac8e9803bd0eab42b45fa4f9aa343407ca9efc75b00576ef"},
+    {file = "lazrs-0.6.3-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:72cb6f81227382c05160b48b39552b2446425aedec6aeec753aa37f7d0ab57a3"},
+    {file = "lazrs-0.6.3-cp310-cp310-win32.whl", hash = "sha256:bfd44d39621e8f8b7a2c370869135534b9a988e441c0da3f21c8326355a9f44e"},
+    {file = "lazrs-0.6.3-cp310-cp310-win_amd64.whl", hash = "sha256:bb4df4ec8a76ff5aa288cc0f3cc5659606591cba9d92414e85b33ff62574a363"},
+    {file = "lazrs-0.6.3-cp311-cp311-macosx_10_12_x86_64.whl", hash = "sha256:8b2446ae08b80983476252fa614fbfdba5bb4cb87eb990432c4808134c0e331c"},
+    {file = "lazrs-0.6.3-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:cd92868b8d0e56cab1fb47d7b7106acef3d17e173b5a4673aced2956b0a6b83d"},
+    {file = "lazrs-0.6.3-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:50096eabb161cde0451d715b552b6161dab49abd672f5681595e6f4ab36e3fcc"},
+    {file = "lazrs-0.6.3-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:13e50b8c7ac07ede6a3aa6684df76b6639554d5ef28b2717144d2444d63c203b"},
+    {file = "lazrs-0.6.3-cp311-cp311-win32.whl", hash = "sha256:460538ed9e6fde4691d0e3bd8c2d6cba9034be6da3369d1c638ab17e2ae44b3b"},
+    {file = "lazrs-0.6.3-cp311-cp311-win_amd64.whl", hash = "sha256:b76450ecf6784bfdf4c027e64abfdbd97b0bae0a48ed00859275d2283760a12b"},
+    {file = "lazrs-0.6.3-cp312-cp312-macosx_10_12_x86_64.whl", hash = "sha256:f9618888359f3cbd657fa2cc5ee3cc628fb5f225f8c3f4095c07a1e8b38d778f"},
+    {file = "lazrs-0.6.3-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:1d695030e206a09f4402d421bec8774f41879b2b1b9f69846d4feaec296e39ed"},
+    {file = "lazrs-0.6.3-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:9f8cde60c321006d825e509733f413925dcfaa6a3a384065ee0034f19486380f"},
+    {file = "lazrs-0.6.3-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:b16bd9160e60dec9e3ac530d0e31b4cf748b52f9291a426aaff895dc06e2c0a3"},
+    {file = "lazrs-0.6.3-cp312-cp312-win32.whl", hash = "sha256:699a025ed3cc4b250a8a0ed7ce33eebfee14d7e0d0c2c1f19364a8ec345119ce"},
+    {file = "lazrs-0.6.3-cp312-cp312-win_amd64.whl", hash = "sha256:cb1f066f9838ca268619e1ac997c99236f4420b51b37d549f651a64f1ac472d5"},
+    {file = "lazrs-0.6.3-cp313-cp313-macosx_10_12_x86_64.whl", hash = "sha256:182a7d03eb2f527e8a4f699fa376e472ee3dd2b1c70bddefbb107b8108766a7b"},
+    {file = "lazrs-0.6.3-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:29bf0ff6d09e2f96379ca3229963b0b874bd06bb9086a0504d7b9ca751ec2b7c"},
+    {file = "lazrs-0.6.3-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:2f74ff696686f1272a8a2491d357559e1b452946c380633d92f1987a6788dcee"},
+    {file = "lazrs-0.6.3-cp313-cp313-win32.whl", hash = "sha256:713188967034fe49280cd7f0c18f90fb564c0bf2803f5bd232e5a6e73df336a6"},
+    {file = "lazrs-0.6.3-cp313-cp313-win_amd64.whl", hash = "sha256:6e5ad82a066b047dec9810dba5e3698a1d51b5d49ed45ef33ca63cdb26b3feb1"},
+    {file = "lazrs-0.6.3-cp39-cp39-macosx_10_12_x86_64.whl", hash = "sha256:d2f2661e856c693d9d2eb6f5a22f615b63e761959fbe2b897a1760ef06566128"},
+    {file = "lazrs-0.6.3-cp39-cp39-macosx_11_0_arm64.whl", hash = "sha256:0e8edb9ae8b644803d79736f30350be43f3f7d20e2ffe7e1ad52924f024d330f"},
+    {file = "lazrs-0.6.3-cp39-cp39-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:ed0e3013f9f49c138bf9fadc5a5f93c0a6f0707b72aa8cd96ea29b1b9c5606d2"},
+    {file = "lazrs-0.6.3-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:98bfae68e54da747709ea7e89c3004ba30d7bb1bf9a87e8f2233a82edfabc79b"},
+    {file = "lazrs-0.6.3-cp39-cp39-win32.whl", hash = "sha256:83cdc84d4038262b049c728afca7af09248d6779cec54f88c5a575ae2da52ab3"},
+    {file = "lazrs-0.6.3-cp39-cp39-win_amd64.whl", hash = "sha256:77bbc26757204cb6e6cd90a29828382fcc1cadfa54785a481cc9156328db3307"},
+    {file = "lazrs-0.6.3.tar.gz", hash = "sha256:ccdb0fcde74e6c6377badbd895a5ee5d2bb23c3c3d04c45486033c12ae1685e3"},
+]
+
+[[package]]
+name = "loguru"
+version = "0.7.3"
+description = "Python logging made (stupidly) simple"
+category = "main"
+optional = false
+python-versions = "<4.0,>=3.5"
+files = [
+    {file = "loguru-0.7.3-py3-none-any.whl", hash = "sha256:31a33c10c8e1e10422bfd431aeb5d351c7cf7fa671e3c4df004162264b28220c"},
+    {file = "loguru-0.7.3.tar.gz", hash = "sha256:19480589e77d47b8d85b2c827ad95d49bf31b0dcde16593892eb51dd18706eb6"},
+]
+
+[package.dependencies]
+colorama = {version = ">=0.3.4", markers = "sys_platform == \"win32\""}
+win32-setctime = {version = ">=1.0.0", markers = "sys_platform == \"win32\""}
+
+[package.extras]
+dev = ["Sphinx (==8.1.3)", "build (==1.2.2)", "colorama (==0.4.5)", "colorama (==0.4.6)", "exceptiongroup (==1.1.3)", "freezegun (==1.1.0)", "freezegun (==1.5.0)", "mypy (==v0.910)", "mypy (==v0.971)", "mypy (==v1.13.0)", "mypy (==v1.4.1)", "myst-parser (==4.0.0)", "pre-commit (==4.0.1)", "pytest (==6.1.2)", "pytest (==8.3.2)", "pytest-cov (==2.12.1)", "pytest-cov (==5.0.0)", "pytest-cov (==6.0.0)", "pytest-mypy-plugins (==1.9.3)", "pytest-mypy-plugins (==3.1.0)", "sphinx-rtd-theme (==3.0.2)", "tox (==3.27.1)", "tox (==4.23.2)", "twine (==6.0.1)"]
 
 [[package]]
 name = "lzf"
@@ -2797,7 +2906,22 @@ files = [
     {file = "widgetsnbextension-4.0.14.tar.gz", hash = "sha256:a3629b04e3edb893212df862038c7232f62973373869db5084aed739b437b5af"},
 ]
 
+[[package]]
+name = "win32-setctime"
+version = "1.2.0"
+description = "A small Python utility to set file creation time on Windows"
+category = "main"
+optional = false
+python-versions = ">=3.5"
+files = [
+    {file = "win32_setctime-1.2.0-py3-none-any.whl", hash = "sha256:95d644c4e708aba81dc3704a116d8cbc974d70b3bdb8be1d150e36be6e9d1390"},
+    {file = "win32_setctime-1.2.0.tar.gz", hash = "sha256:ae1fdf948f5640aae05c511ade119313fb6a30d7eabe25fef9764dca5873c4c0"},
+]
+
+[package.extras]
+dev = ["black (>=19.3b0)", "pytest (>=4.6.2)"]
+
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.11"
-content-hash = "b0803736b64ab0411e411842e1d91d93fc2a07eddb21103e38a5b05cfc617be1"
+content-hash = "29927acc4860b4d6038c1651cd45a8b8809adf982d2a7f9edf84967a8e2d7b1b"

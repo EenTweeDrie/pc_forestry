@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "pc-forestry"
-version = "0.2.0"
+version = "0.3.0"
 description = ""
 authors = ["EenTweeDrie <eentweedrie@yandex.ru>"]
 license = "MIT"
@@ -12,14 +12,14 @@ python = "^3.11"
 torch = "^2.7.0"
 numpy = "^2.2.5"
 open3d = "^0.19.0"
-laspy = "^2.5.4"
 pyvista = "^0.45.2"
 urllib3 = "<2.0"
 lzf = "^0.1"
 h5py = "^3.13.0"
 hdbscan = "^0.8.40"
 circle-fit = "^0.2.1"
-
+loguru = "^0.7.3"
+laspy = {extras = ["laszip", "lazrs"], version = "^2.5.4"}
 
 [build-system]
 requires = ["poetry-core"]

@@ -662,19 +662,6 @@ class PCD:
         self.gps_time = np.take(self.gps_time, unique_indices)
         self.illuminance = np.take(self.illuminance, unique_indices)
 
-    def concatenate(self, data: np.ndarray) -> None:
-        ''' DEPRECATED, use self.append() instead'''
-        dt = np.c_[self.points, self.intensity,
-                   self.rgb, self.original_cloud_index, self.gps_time]
-        dt = np.concatenate((dt, data), axis=0)
-        dt = np.array(dt, dtype=np.float32)
-        self.points = dt[:, 0:3]
-        self.intensity = dt[:, 3]
-        self.rgb = dt[:, 4:7]
-        self.original_cloud_index = dt[:, 7]
-        self.gps_time = dt[:, 8]
-        self.illuminance = dt[:, 9]
-
     def append(self, other: 'PCD') -> None:
         """ append PCD object """
         if not isinstance(other, PCD):
