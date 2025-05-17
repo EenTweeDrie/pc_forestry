@@ -318,6 +318,12 @@ class TREE(PCD):
         self.diameter_LS = breast_diameter_tree
         self.diameter_HLS = breast_diameter_tree_hyper
 
+    def estimate_height(self):
+        """ estimate the height of the tree """
+        z_min = min(self.points[:, 2])
+        z_max = max(self.points[:, 2])
+        self.height = z_max - z_min
+
     def estimate_coordinate(self, error_threshold: float = 0.2, low_height: float = 0, high_height: float = 0.6):
         """ estimate the coordinate of the tree """
         # If there is no trunk slice, find it
