@@ -99,9 +99,10 @@ class PCD:
             las.y = self.points[:, 1]
             las.z = self.points[:, 2]
             if self.rgb.size > 0:
-                las.red = self.rgb[:, 0] * 256
-                las.green = self.rgb[:, 1] * 256
-                las.blue = self.rgb[:, 2] * 256
+                rgb = self.rgb.astype(np.uint16)
+                las.red = rgb[:, 0] * 256
+                las.green = rgb[:, 1] * 256
+                las.blue = rgb[:, 2] * 256
             if self.intensity.size > 0:
                 las.intensity = self.intensity
             if self.illuminance.size > 0:
@@ -125,14 +126,16 @@ class PCD:
             las = laspy.LasData(header)
             las.add_extra_dim(laspy.ExtraBytesParams(
                 name="illuminance", type=np.float32))
+
             self.points = np.asarray(self.points, dtype=np.float32)
             las.x = self.points[:, 0]
             las.y = self.points[:, 1]
             las.z = self.points[:, 2]
             if self.rgb.size > 0:
-                las.red = self.rgb[:, 0] * 256
-                las.green = self.rgb[:, 1] * 256
-                las.blue = self.rgb[:, 2] * 256
+                rgb = self.rgb.astype(np.uint16)
+                las.red = rgb[:, 0] * 256
+                las.green = rgb[:, 1] * 256
+                las.blue = rgb[:, 2] * 256
             if self.intensity.size > 0:
                 las.intensity = self.intensity
             if self.illuminance.size > 0:
