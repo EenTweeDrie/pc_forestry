@@ -146,7 +146,8 @@ class TREE(PCD):
                 return None
 
             # Step 2: Apply HDBSCAN clustering
-            clusterer = hdbscan.HDBSCAN(min_cluster_size=10)
+            clusterer = hdbscan.HDBSCAN(min_cluster_size=10,
+                                        core_dist_n_jobs=1)
             cluster_labels = clusterer.fit_predict(lower_points)
 
             if len(set(cluster_labels)) <= 1:

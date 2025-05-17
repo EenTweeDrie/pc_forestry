@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "pc-forestry"
-version = "0.3.1"
+version = "0.3.2"
 description = ""
 authors = ["EenTweeDrie <eentweedrie@yandex.ru>"]
 license = "MIT"
@@ -8,7 +8,7 @@ readme = "README.md"
 packages = [{include = "pc_forestry"}]
 
 [tool.poetry.dependencies]
-python = "^3.11"
+python = ">=3.11, <3.12"
 torch = "^2.7.0"
 numpy = "^2.2.5"
 open3d = "^0.19.0"
