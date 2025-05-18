@@ -304,16 +304,14 @@ class TREE(PCD):
         x_max, y_max, z_max = self.trunk_slice.points.max(axis=0)
         check_r_median = ((x_max - x_min) + (y_max - y_min))/4
         if (r_median > 0.65) or (r_median > 2.1*check_r_median) or (r_median == 0.0):
-            logger.info('Fallback1')
+            logger.debug('Fallback1')
             r_median = check_r_median
         if (rh_median > 0.65) or (rh_median > 2.1*check_r_median) or (rh_median == 0.0):
-            logger.info('Fallback2')
+            logger.debug('Fallback2')
             rh_median = check_r_median
 
-        breast_diameter_tree = 100 * float(f"{r_median*2:.2f}")
-        breast_diameter_tree_hyper = 100 * float(f"{rh_median*2:.2f}")
-        breast_diameter_tree = float(f"{breast_diameter_tree:.2f}")
-        breast_diameter_tree_hyper = float(f"{breast_diameter_tree_hyper:.2f}")
+        breast_diameter_tree = float(f"{100 * r_median*2:.2f}")
+        breast_diameter_tree_hyper = float(f"{100 * rh_median*2:.2f}")
 
         self.diameter_LS = breast_diameter_tree
         self.diameter_HLS = breast_diameter_tree_hyper
