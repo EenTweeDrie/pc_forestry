@@ -349,11 +349,11 @@ class TREE(PCD):
         distance = np.sqrt((xc_circle - xc_mass) ** 2 +
                            (yc_circle - yc_mass) ** 2)
         if distance > error_threshold:
-            # logger.info(f'Choose the center of mass')
+            logger.debug(f'Choose the center of mass')
             coordinate = [xc_mass, yc_mass,
                           (high_height-low_height)/2+low_height+z_min]
         else:
-            # logger.info(f'Choose the center of the circle')
+            logger.debug(f'Choose the center of the circle')
             coordinate = [xc_circle, yc_circle,
                           (high_height-low_height)/2+low_height+z_min]
 
@@ -387,7 +387,10 @@ class TREE(PCD):
         pcd_to_show = []
 
         if self.custom_coordinate is None:
-            self.estimate_coordinate(low_height=1, high_height=1.6)
+            self.estimate_coordinate(low_height=1.2, high_height=1.4)
+
+        if self.coordinate is None:
+            self.estimate_coordinate()
 
         if self.diameter_LS is None:
             self.estimate_diameter()

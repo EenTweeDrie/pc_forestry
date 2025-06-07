@@ -8,6 +8,8 @@ import pyvista
 import h5py
 import pandas as pd
 import copy
+from tqdm import tqdm
+from loguru import logger
 
 
 class PCD:
@@ -635,6 +637,114 @@ class PCD:
         except:
             self.illuminance = np.empty(0)
 
+    def _generate_hemisphere_rays(self, normal_p: np.ndarray, num_rays: int) -> np.ndarray:
+        """Helper method to generate random rays on a hemisphere oriented by a normal vector."""
+        rays = []
+        while len(rays) < num_rays:
+            # Generate a random vector in a 3D space
+            v = np.random.normal(size=3)
+            norm_v = np.linalg.norm(v)
+            if norm_v < 1e-6:
+                continue
+            v /= norm_v
+
+            # Ensure the vector is in the hemisphere defined by the normal
+            if np.dot(v, normal_p) < 0:
+                v = -v
+            rays.append(v)
+        return np.array(rays)
+
+    def calculate_illuminance(self,
+                              num_rays: int = 32,
+                              max_ray_distance: float = 0.5,
+                              ao_neighbor_radius: float = 0.02,
+                              normal_est_radius: float = None,
+                              normal_est_max_nn: int = 30,
+                              force_normal_recalculation: bool = False,
+                              verbose: bool = False) -> None:
+        """
+        Calculates ambient occlusion for each point and stores it in the `illuminance` attribute.
+
+        This method simulates light rays originating from each point and checks for occlusions
+        by nearby points. The illuminance value is proportional to the number of unoccluded rays.
+        A lower value means more occlusion and less light.
+
+        Args:
+            num_rays (int): Number of rays to cast from each point.
+            max_ray_distance (float): Maximum distance to check for occluders.
+            ao_neighbor_radius (float): Radius to search for neighbors around points on the ray.
+            normal_est_radius (float): The radius to search for neighbors for normal estimation.
+                                       If None, it's set to `max_ray_distance / 2`.
+            normal_est_max_nn (int): The maximum number of neighbours to search for normal estimation.
+            force_normal_recalculation (bool): If True, normals will be re-estimated even if they exist.
+            verbose (bool): If True, prints progress information.
+        """
+        num_points = len(self.points)
+        if num_points == 0:
+            logger.debug("No points to calculate illuminance.")
+            return
+
+        if normal_est_radius is None:
+            normal_est_radius = max_ray_distance / 2
+
+        # 1. Ensure normals are available.
+        if self._normals is None or self._normals.shape[0] != num_points or force_normal_recalculation:
+            logger.debug(
+                "Normals not available or recalculation forced. Estimating normals...")
+            self.estimate_normals(radius=normal_est_radius,
+                                  max_nn=normal_est_max_nn)
+
+        # 2. Build a KDTree for efficient neighbor searches.
+        logger.debug("Building KDTree for AO calculation...")
+        pcd_o3d = o3d.geometry.PointCloud()
+        pcd_o3d.points = o3d.utility.Vector3dVector(self.points)
+        kdtree = o3d.geometry.KDTreeFlann(pcd_o3d)
+
+        if self.illuminance is None or self.illuminance.shape[0] != num_points:
+            self.illuminance = np.zeros(num_points, dtype=np.float32)
+
+        logger.debug(
+            f"Calculating Ambient Occlusion for {num_points} points...")
+        logger.debug(
+            f"  Parameters: num_rays={num_rays}, max_ray_dist={max_ray_distance}, ao_neighbor_radius={ao_neighbor_radius}")
+
+        # 3. Iterate over each point to calculate its illuminance.
+        for i in tqdm(range(num_points), desc="Calculating Ambient Occlusion"):
+
+            point_p = self.points[i]
+            normal_p = self._normals[i]
+
+            if np.linalg.norm(normal_p) < 1e-6:
+                # Default for points with no valid normal
+                self.illuminance[i] = 0.5
+                continue
+
+            rays = self._generate_hemisphere_rays(normal_p, num_rays)
+            occluded_count = 0
+
+            # 4. For each ray, check for occlusion.
+            for ray_dir in rays:
+                is_occluded_this_ray = False
+                # We sample points along the ray and check if any geometry is nearby.
+                num_steps = 10
+                for step in range(1, num_steps + 1):
+                    dist_along_ray = (step / num_steps) * max_ray_distance
+                    test_point_on_ray = point_p + ray_dir * dist_along_ray
+
+                    # Search for neighbors around the sample point on the ray.
+                    [k, idx, _] = kdtree.search_radius_vector_3d(
+                        test_point_on_ray, ao_neighbor_radius)
+
+                    if k > 1 or (k == 1 and idx[0] != i):
+                        is_occluded_this_ray = True
+                        break
+
+                if is_occluded_this_ray:
+                    occluded_count += 1
+
+            # 5. Illuminance is the ratio of unoccluded rays.
+            self.illuminance[i] = 1.0 - (occluded_count / num_rays)
+
     def estimate_normals(self, radius: float = 0.1, max_nn: int = 30) -> None:
         """ estimate normals """
         pcd = o3d.geometry.PointCloud()
@@ -646,7 +756,7 @@ class PCD:
     def get_normals(self, radius: float = 0.1, max_nn: int = 30) -> np.ndarray:
         """ get normals """
         if self._normals is None:
-            print("Estimating normals")
+            logger.debug("Estimating normals")
             self.estimate_normals(radius=radius, max_nn=max_nn)
         return self._normals
 

@@ -10,7 +10,8 @@ from loguru import logger
 
 
 class VOXEL(PCD):
-    distance = None
+    normalized_distance = None
+    norm_distance_to_coord = None
     _mean_normals = None
 
     def __init__(self, index):
@@ -166,7 +167,8 @@ class VOXELGRID:
             'mean_b': [mean_rgb[i][2] for i in range(len(mean_rgb))],
             'mean_illuminance': [voxel.mean_illuminance for voxel in self.voxels],
             'mean_gps_time': [voxel.mean_gps_time for voxel in self.voxels],
-            'distance': [voxel.distance for voxel in self.voxels],
+            'normalized_distance': [voxel.normalized_distance for voxel in self.voxels],
+            'norm_distance_to_coord': [voxel.norm_distance_to_coord for voxel in self.voxels],
             'mean_normals_x': [mean_normals[i][0] for i in range(len(mean_normals))],
             'mean_normals_y': [mean_normals[i][1] for i in range(len(mean_normals))],
             'mean_normals_z': [mean_normals[i][2] for i in range(len(mean_normals))],
@@ -222,59 +224,125 @@ class VOXELGRID:
         """Возвращает все воксели с указанного слоя"""
         return [voxel for voxel in self.voxels if voxel.index[dimension] == layer]
 
-    def calculate_distances_to_coordinate(self, coordinate) -> dict:
-        """Считает расстояния до координаты дерева для всех вокселей"""
+    def calculate_distances_to_coordinate_by_layer(self, coordinate, layer: int) -> dict:
+        """Считает расстояния до координаты дерева для всех вокселей указанного слоя"""
         coordinate = [coordinate[0], coordinate[1], 0]
         distances = {}
-        voxels = self.get_voxels_by_layer(0)
+        voxels = self.get_voxels_by_layer(layer)
         for voxel in voxels:
             center = voxel.calculate_center(self.voxel_size)
             if center is not None:
                 distance = np.linalg.norm(
                     np.array(center) - np.array(coordinate))
                 distances[voxel.index] = distance
+                self.get_voxel_by_grid_index(
+                    voxel.index).normalized_distance = distance / self.voxel_size
+                self.get_voxel_by_grid_index(
+                    voxel.index).norm_distance_to_coord = distance / self.voxel_size
+        return distances
+
+    def calculate_distances_to_previous_layer_by_layer(self, coordinate, layer: int) -> dict:
+        """Считает расстояния до ближайшего вокселя в нижнем слое с label = 0 (ствол) для указанного слоя"""
+
+        current_layer_voxels = self.get_voxels_by_layer(layer)
+        distances = {}
+
+        if layer == 0:
+            distances_first_layer = self.calculate_distances_to_coordinate_by_layer(
+                coordinate, layer)
+            distances.update(distances_first_layer)
+
+        else:
+            # find labeled voxels in previous layers
+            labeled_voxels = []
+            i = layer - 1
+            while not labeled_voxels:
+                if i < 0:
+                    logger.error(f"No labeled voxels found in layer {i}")
+                    break
+                previous_layer_voxels = self.get_voxels_by_layer(i)
+                labeled_voxels = [
+                    voxel for voxel in previous_layer_voxels if voxel.label == 0]
+                i -= 1
+
+            for voxel in current_layer_voxels:
+                center = voxel.calculate_center(self.voxel_size)
+                if center is not None and labeled_voxels:
+                    min_distance = float('inf')
+                    for labeled_voxel in labeled_voxels:
+                        labeled_center = labeled_voxel.calculate_center(
+                            self.voxel_size)
+                        if labeled_center is not None:
+                            distance = np.linalg.norm(
+                                np.array(center) - np.array(labeled_center))
+                            if distance < min_distance:
+                                min_distance = distance
+                    distances[voxel.index] = min_distance
+                    self.get_voxel_by_grid_index(
+                        voxel.index).normalized_distance = min_distance / self.voxel_size
+        return distances
+
+    def calculate_distances_to_coordinate(self, coordinate) -> dict:
+        index = np.array([voxel.index for voxel in self.voxels])
+        max_layer = max([index[i][2] for i in range(len(index))])
+        distances = {}
+        for layer in tqdm(range(max_layer+1), desc="Calculating distances to coordinate"):
+            distances_layer = self.calculate_distances_to_coordinate_by_layer(
+                coordinate, layer)
+            distances.update(distances_layer)
         return distances
 
     def calculate_distances_to_previous_layer(self, coordinate) -> dict:
-        """Считает расстояния до ближайшего вокселя в нижнем слое с label = 0 (ствол)"""
         index = np.array([voxel.index for voxel in self.voxels])
         max_layer = max([index[i][2] for i in range(len(index))])
+        distances = {}
 
         for layer in tqdm(range(max_layer+1), desc="Calculating distances to previous layer"):
-            current_layer_voxels = self.get_voxels_by_layer(layer)
-            if layer == 0:
-                tree_center = [coordinate[0], coordinate[1], 0]
-                for voxel in current_layer_voxels:
-                    center = voxel.calculate_center(self.voxel_size)
-                    if center is not None:
-                        distance = np.linalg.norm(
-                            np.array(center) - np.array(tree_center))
-                        self.get_voxel_by_grid_index(
-                            voxel.index).distance = distance / self.voxel_size
-            else:
-                # find labeled voxels in previous layers
-                labeled_voxels = []
-                i = layer - 1
-                while not labeled_voxels:
-                    if i < 0:
-                        logger.error(f"No labeled voxels found in layer {i}")
-                        break
-                    previous_layer_voxels = self.get_voxels_by_layer(i)
-                    labeled_voxels = [
-                        voxel for voxel in previous_layer_voxels if voxel.label == 0]
-                    i -= 1
+            distances_layer = self.calculate_distances_to_previous_layer_by_layer(
+                coordinate, layer)
+            distances.update(distances_layer)
+        return distances
 
-                for voxel in current_layer_voxels:
-                    center = voxel.calculate_center(self.voxel_size)
-                    if center is not None and labeled_voxels:
-                        min_distance = float('inf')
-                        for labeled_voxel in labeled_voxels:
-                            labeled_center = labeled_voxel.calculate_center(
-                                self.voxel_size)
-                            if labeled_center is not None:
-                                distance = np.linalg.norm(
-                                    np.array(center) - np.array(labeled_center))
-                                if distance < min_distance:
-                                    min_distance = distance
-                        self.get_voxel_by_grid_index(
-                            voxel.index).distance = min_distance / self.voxel_size
+    # def calculate_distances_to_previous_layer(self, coordinate, layer: int) -> dict:
+    #     """Считает расстояния до ближайшего вокселя в нижнем слое с label = 0 (ствол)"""
+    #     index = np.array([voxel.index for voxel in self.voxels])
+    #     max_layer = max([index[i][2] for i in range(len(index))])
+
+    #     for layer in tqdm(range(max_layer+1), desc="Calculating distances to previous layer"):
+    #         current_layer_voxels = self.get_voxels_by_layer(layer)
+    #         if layer == 0:
+    #             tree_center = [coordinate[0], coordinate[1], 0]
+    #             for voxel in current_layer_voxels:
+    #                 center = voxel.calculate_center(self.voxel_size)
+    #                 if center is not None:
+    #                     distance = np.linalg.norm(
+    #                         np.array(center) - np.array(tree_center))
+    #                     self.get_voxel_by_grid_index(
+    #                         voxel.index).distance = distance / self.voxel_size
+    #         else:
+    #             # find labeled voxels in previous layers
+    #             labeled_voxels = []
+    #             i = layer - 1
+    #             while not labeled_voxels:
+    #                 if i < 0:
+    #                     logger.error(f"No labeled voxels found in layer {i}")
+    #                     break
+    #                 previous_layer_voxels = self.get_voxels_by_layer(i)
+    #                 labeled_voxels = [
+    #                     voxel for voxel in previous_layer_voxels if voxel.label == 0]
+    #                 i -= 1
+
+    #             for voxel in current_layer_voxels:
+    #                 center = voxel.calculate_center(self.voxel_size)
+    #                 if center is not None and labeled_voxels:
+    #                     min_distance = float('inf')
+    #                     for labeled_voxel in labeled_voxels:
+    #                         labeled_center = labeled_voxel.calculate_center(
+    #                             self.voxel_size)
+    #                         if labeled_center is not None:
+    #                             distance = np.linalg.norm(
+    #                                 np.array(center) - np.array(labeled_center))
+    #                             if distance < min_distance:
+    #                                 min_distance = distance
+    #                     self.get_voxel_by_grid_index(
+    #                         voxel.index).distance = min_distance / self.voxel_size
