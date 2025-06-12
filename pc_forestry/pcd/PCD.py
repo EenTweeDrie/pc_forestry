@@ -611,6 +611,8 @@ class PCD:
         self.gps_time = self.gps_time[centroids[0]]
         self.illuminance = self.illuminance[centroids[0]]
         self.points = pt_sampled.cpu().detach().numpy()
+        if hasattr(self, 'normals'):
+            self.normals = self.normals[centroids[0]]
 
     def index_cut(self, idx_labels: np.ndarray) -> None:
         """ cut points and intensity using indexes """
@@ -636,6 +638,11 @@ class PCD:
             self.illuminance = self.illuminance[idx_labels]
         except:
             self.illuminance = np.empty(0)
+        if hasattr(self, 'normals'):
+            try:
+                self.normals = self.normals[idx_labels]
+            except:
+                self.normals = np.empty((0, 3))
 
     def _generate_hemisphere_rays(self, normal_p: np.ndarray, num_rays: int) -> np.ndarray:
         """Helper method to generate random rays on a hemisphere oriented by a normal vector."""
@@ -784,10 +791,13 @@ class PCD:
             (self.intensity, other.intensity), axis=0)
         self.rgb = np.concatenate((self.rgb, other.rgb), axis=0)
         self.original_cloud_index = np.concatenate(
-            (self.original_cloud_index, other.index), axis=0)
+            (self.original_cloud_index, other.original_cloud_index), axis=0)
         self.gps_time = np.concatenate((self.gps_time, other.gps_time), axis=0)
         self.illuminance = np.concatenate(
             (self.illuminance, other.illuminance), axis=0)
+        if hasattr(other, 'normals'):
+            self.normals = np.concatenate(
+                (self.normals, other.normals), axis=0)
 
     def show(self, color_field: str = 'intensity') -> None:
         """ show PCD object """

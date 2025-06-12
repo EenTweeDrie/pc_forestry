@@ -10,11 +10,11 @@ from loguru import logger
 
 
 class VOXEL(PCD):
-    normalized_distance = None
-    norm_distance_to_coord = None
+    distance = None
+    distance_to_coord = None
     _mean_normals = None
 
-    def __init__(self, index):
+    def __init__(self, index=np.empty((0, 3))):
         super().__init__()
         self.index = index
 
@@ -53,8 +53,15 @@ class VOXEL(PCD):
 
     @property
     def label(self):
-        return np.bincount(self.original_cloud_index.astype(np.int64)).argmax()\
+        self._label = np.bincount(
+            self.original_cloud_index.astype(np.int64)).argmax()
+        return self._label
 
+    @label.setter
+    def label(self, label):
+        self.original_cloud_index = np.full(
+            self.original_cloud_index.shape, label)
+        self._label = label
 
     def add_point(self,
                   point,
@@ -100,10 +107,10 @@ class VOXEL(PCD):
 
 
 class VOXELGRID:
-    def __init__(self, PC: PCD, voxel_size: float):
+    def __init__(self, PC: PCD, voxel_size: float, voxels: list[VOXEL] = None):
         self.PC = PC
         self.voxel_size = voxel_size
-        self.voxels = None
+        self.voxels = voxels
 
     @classmethod
     def create(cls, PC: PCD, voxel_size: float, verbose: bool = False):
@@ -167,8 +174,8 @@ class VOXELGRID:
             'mean_b': [mean_rgb[i][2] for i in range(len(mean_rgb))],
             'mean_illuminance': [voxel.mean_illuminance for voxel in self.voxels],
             'mean_gps_time': [voxel.mean_gps_time for voxel in self.voxels],
-            'normalized_distance': [voxel.normalized_distance for voxel in self.voxels],
-            'norm_distance_to_coord': [voxel.norm_distance_to_coord for voxel in self.voxels],
+            'distance': [voxel.distance for voxel in self.voxels],
+            'distance_to_coord': [voxel.distance_to_coord for voxel in self.voxels],
             'mean_normals_x': [mean_normals[i][0] for i in range(len(mean_normals))],
             'mean_normals_y': [mean_normals[i][1] for i in range(len(mean_normals))],
             'mean_normals_z': [mean_normals[i][2] for i in range(len(mean_normals))],
@@ -193,6 +200,8 @@ class VOXELGRID:
             df['mean_illuminance'].max() - df['mean_illuminance'].min())
         df['mean_gps_time'] = (df['mean_gps_time'] - df['mean_gps_time'].min()) / \
             (df['mean_gps_time'].max() - df['mean_gps_time'].min())
+        df['distance'] = (df['distance'] / self.voxel_size)
+        df['distance_to_coord'] = (df['distance_to_coord'] / self.voxel_size)
         df = df.apply(lambda x: x.fillna(0) if x.dtype == "float64" else x)
         return df
 
@@ -224,6 +233,12 @@ class VOXELGRID:
         """Возвращает все воксели с указанного слоя"""
         return [voxel for voxel in self.voxels if voxel.index[dimension] == layer]
 
+    def get_pcd_by_voxels(self, voxels: list) -> PCD:
+        pcd = PCD()
+        for voxel in voxels:
+            pcd.append(voxel)
+        return pcd
+
     def calculate_distances_to_coordinate_by_layer(self, coordinate, layer: int) -> dict:
         """Считает расстояния до координаты дерева для всех вокселей указанного слоя"""
         coordinate = [coordinate[0], coordinate[1], 0]
@@ -235,10 +250,11 @@ class VOXELGRID:
                 distance = np.linalg.norm(
                     np.array(center) - np.array(coordinate))
                 distances[voxel.index] = distance
+                if layer == 0:
+                    self.get_voxel_by_grid_index(
+                        voxel.index).distance = distance
                 self.get_voxel_by_grid_index(
-                    voxel.index).normalized_distance = distance / self.voxel_size
-                self.get_voxel_by_grid_index(
-                    voxel.index).norm_distance_to_coord = distance / self.voxel_size
+                    voxel.index).distance_to_coord = distance
         return distances
 
     def calculate_distances_to_previous_layer_by_layer(self, coordinate, layer: int) -> dict:
@@ -258,6 +274,7 @@ class VOXELGRID:
             i = layer - 1
             while not labeled_voxels:
                 if i < 0:
+                    # TODO: fix this
                     logger.error(f"No labeled voxels found in layer {i}")
                     break
                 previous_layer_voxels = self.get_voxels_by_layer(i)
@@ -279,7 +296,7 @@ class VOXELGRID:
                                 min_distance = distance
                     distances[voxel.index] = min_distance
                     self.get_voxel_by_grid_index(
-                        voxel.index).normalized_distance = min_distance / self.voxel_size
+                        voxel.index).distance = min_distance
         return distances
 
     def calculate_distances_to_coordinate(self, coordinate) -> dict:
