@@ -387,7 +387,7 @@ class TREE(PCD):
         pcd_to_show = []
 
         if self.custom_coordinate is None:
-            self.estimate_coordinate(low_height=1.2, high_height=1.4)
+            self.estimate_coordinate(low_height=1.3, high_height=1.4)
 
         if self.coordinate is None:
             self.estimate_coordinate()
@@ -405,13 +405,13 @@ class TREE(PCD):
             if self.diameter_LS and self.coordinate:
                 # Display the diameter as a circle at a height of 1.3 meters
                 circle_center = self.custom_coordinate
+                print(self.custom_coordinate, self.custom_coordinate[2])
                 circle_radius = self.diameter_LS / 2 / 100  # convert to meters
                 circle_points = []
                 for angle in np.linspace(0, 2 * np.pi, 100):
                     x = circle_center[0] + circle_radius * np.cos(angle)
                     y = circle_center[1] + circle_radius * np.sin(angle)
-                    circle_points.append([x, y, circle_center[2]])
-                circle_points = np.array(circle_points)
+                    circle_points.append([x-0.15, y-0.15, 1.3])
                 # Create a point cloud for the circle
                 circle_pcd = o3d.geometry.PointCloud()
                 circle_pcd.points = o3d.utility.Vector3dVector(circle_points)

@@ -856,20 +856,62 @@ class PCD:
         self.gps_time = np.nan_to_num(self.gps_time)
         self.illuminance = np.nan_to_num(self.illuminance)
 
-    def visual_gif(self, path_gif: str, zoom: float = 0.4, point_size: float = 4.0) -> None:
-        """ visualize PCD object as gif """
+    def visual_gif(self, path_gif: str, zoom: float = 0.4, point_size: float = 4.0, color_field: str = 'rgb') -> None:
+        """ Визуализировать объект PCD как gif с цветовой схемой blue > green > yellow > red """
+        import pyvista
+        import numpy as np
+
         cloud = pyvista.PointSet(self.points)
-        scalars = np.linalg.norm(cloud.points - cloud.center, axis=1)
+
+        def colormap_bgyr(values: np.ndarray) -> np.ndarray:
+            """
+            Кастомная цветовая карта: blue -> green -> yellow -> red
+            values: нормализованный массив [0, 1]
+            """
+            # Градиент: 0.0 - синий, 0.33 - зеленый, 0.66 - желтый, 1.0 - красный
+            colors = np.zeros((values.shape[0], 3))
+            for i, v in enumerate(values):
+                if v <= 0.33:
+                    # от синего (0,0,1) к зеленому (0,1,0)
+                    t = v / 0.33
+                    colors[i] = [0 * (1-t) + 0 * t, 0 *
+                                 (1-t) + 1 * t, 1 * (1-t) + 0 * t]
+                elif v <= 0.66:
+                    # от зеленого (0,1,0) к желтому (1,1,0)
+                    t = (v - 0.33) / (0.66 - 0.33)
+                    colors[i] = [0 * (1-t) + 1 * t, 1, 0]
+                else:
+                    # от желтого (1,1,0) к красному (1,0,0)
+                    t = (v - 0.66) / (1.0 - 0.66)
+                    colors[i] = [1, 1 * (1-t) + 0 * t, 0]
+            return colors
+
+        # Определяем цвета
+        if color_field == 'rgb' and self.rgb.size > 0:
+            # Если rgb, используем как есть, но нормализуем
+            colors = np.asarray(self.rgb)
+            colors = colors / 255.0  # нормализация RGB
+        elif hasattr(self, color_field) and getattr(self, color_field).size > 0:
+            field_values = np.asarray(getattr(self, color_field))
+            # Нормализация в [0, 1]
+            field_values = (field_values - field_values.min()) / \
+                (field_values.max() - field_values.min() + 1e-8)
+            colors = colormap_bgyr(field_values)
+        else:
+            # Цвет по умолчанию — синий
+            colors = np.ones(
+                (self.points.shape[0], 3)) * np.array([0.0, 0.0, 1.0])
+
         pl = pyvista.Plotter(off_screen=True)
         pl.add_mesh(
             cloud,
-            color='#fff7c2',
-            scalars=scalars,
+            scalars=colors,
+            rgb=True,
             opacity=1,
             point_size=point_size,
             show_scalar_bar=False,
         )
-        pl.background_color = 'k'
+        pl.background_color = (0.5, 0.5, 0.5)  # светло-серый фон
         pl.show(auto_close=False)
         pl.camera.zoom(zoom)
         path = pl.generate_orbital_path(

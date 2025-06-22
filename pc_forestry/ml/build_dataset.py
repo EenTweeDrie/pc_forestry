@@ -67,7 +67,7 @@ def build_dataset(input_dir, output_dir, dataset_type, voxel_size):
     os.makedirs(combined_output_dir, exist_ok=True)
 
     # Поиск файлов (предполагаем, что они .txt)
-    search_pattern = os.path.join(input_dir, '*.txt')
+    search_pattern = os.path.join(input_dir, '*.las')
     file_paths = glob.glob(search_pattern)
 
     if not file_paths:
@@ -85,7 +85,7 @@ def build_dataset(input_dir, output_dir, dataset_type, voxel_size):
 
             # Сохранение индивидуального файла
             output_filename = os.path.basename(
-                file_path).replace('.txt', '.csv')
+                file_path).replace('.las', '.csv')
             individual_save_path = os.path.join(
                 individual_output_dir, output_filename)
             df.to_csv(individual_save_path, index=False, sep=';')

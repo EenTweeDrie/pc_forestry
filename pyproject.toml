@@ -20,6 +20,8 @@ hdbscan = "^0.8.40"
 circle-fit = "^0.2.1"
 loguru = "^0.7.3"
 laspy = {extras = ["laszip", "lazrs"], version = "^2.5.4"}
+catboost = "^1.2.8"
+imageio = "^2.37.0"
 
 [build-system]
 requires = ["poetry-core"]

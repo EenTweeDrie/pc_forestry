@@ -57,6 +57,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 from sklearn.neural_network import MLPClassifier
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import KFold
 
 try:
     from catboost import CatBoostClassifier
@@ -202,7 +203,7 @@ except ImportError:
 
 
 # type: ignore
-def extract_features_from_voxels(voxels: List["VOXELGRID".voxel]) -> pd.DataFrame:
+def extract_features_from_voxels(voxels: List) -> pd.DataFrame:
     """Построение DataFrame признаков для списка вокселей."""
     vg_tmp = VOXELGRID(
         PC=None, voxel_size=voxels[0].voxel_size, voxels=voxels)  # type: ignore
@@ -210,22 +211,25 @@ def extract_features_from_voxels(voxels: List["VOXELGRID".voxel]) -> pd.DataFram
     return df
 
 
-def predict_for_tree(model, file_path: str, voxel_size: float = 0.5):
-    """Пример инференса модели для одного дерева .pcd/.txt.
+def predict_for_tree(model, file_path: str, voxel_size: float = 0.5, gif_path: str = None):
+    """
+    Пример инференса модели для одного дерева .pcd/.txt.
 
-    Пошагово строится воксельная сетка, последовательно для каждого слоя
-    вычисляются расстояния до предыдущего слоя, затем вызывается модель.
+    Для каждого слоя строится картинка (визуализация), затем все картинки объединяются в gif.
     Полученные предсказания сохраняются в атрибут `label` каждого вокселя.
+    Теперь gif цикличный и с кручением (вращением).
     """
     if TREE is None or VOXELGRID is None:
         raise RuntimeError(
             "Модули TREE/VOXELGRID недоступны. Проверьте PYTHONPATH.")
 
     import numpy as np  # локальный импорт, чтобы избежать конфликтов при отсутствии numpy
+    import os
+    import imageio
 
     pc = TREE.read(file_path)
     pc.shift_to_zero()
-    pc.calculate_illuminance()
+    # pc.calculate_illuminance()
     pc.estimate_normals()
     pc.estimate_coordinate()
 
@@ -234,7 +238,14 @@ def predict_for_tree(model, file_path: str, voxel_size: float = 0.5):
     index = np.array([voxel.index for voxel in vg.voxels])
     max_layer = int(np.max(index[:, 2]))
 
-    voxels_total: List = []
+    for voxel in vg.voxels:
+        voxel.label = 2
+
+    voxels_total: list = []
+    images = []
+    tmp_dir = "_tmp_predict_gif"
+    if gif_path is not None:
+        os.makedirs(tmp_dir, exist_ok=True)
 
     for layer in range(max_layer + 1):
         vg.calculate_distances_to_previous_layer_by_layer(
@@ -254,12 +265,69 @@ def predict_for_tree(model, file_path: str, voxel_size: float = 0.5):
         # Присваиваем метку 1, если вероятность > 0.5 (порог можно настроить)
         for voxel, p in zip(voxels_layer, proba[-len(voxels_layer):]):
             voxel.label = int(p >= 0.5)
+            voxel.proba = p
+
+        # Визуализация для текущего слоя
+        if gif_path is not None:
+            # Сохраняем картинки с разными углами обзора для кручения
+            try:
+                import pyvista
+                n_angles = 24  # количество кадров вращения для плавности
+                for angle_idx in range(n_angles):
+                    img_path = os.path.join(
+                        tmp_dir, f"layer_{layer:03d}_angle_{angle_idx:02d}.png")
+                    vg_tmp = VOXELGRID(
+                        PC=None, voxel_size=vg.voxel_size, voxels=list(voxels_total))
+                    pl = pyvista.Plotter(off_screen=True)
+                    voxel_centers = np.array([voxel.calculate_center(
+                        vg_tmp.voxel_size) for voxel in vg_tmp.voxels if voxel.calculate_center(vg_tmp.voxel_size) is not None])
+                    if voxel_centers.size > 0:
+                        cloud = pyvista.PointSet(voxel_centers)
+                        labels = np.array([getattr(voxel, "label", 0)
+                                          for voxel in vg_tmp.voxels])
+                        # Цвета: 0 - синий, 1 - красный
+                        colors = np.zeros((labels.shape[0], 3))
+                        colors[labels == 0] = [0, 0, 1]
+                        colors[labels == 1] = [1, 0, 0]
+                        pl.add_mesh(cloud, scalars=colors, rgb=True,
+                                    point_size=8, show_scalar_bar=False)
+                    pl.background_color = (0.5, 0.5, 0.5)
+                    pl.camera.zoom(0.5)
+                    # Вращаем камеру вокруг оси Z
+                    azimuth = 360 * angle_idx / n_angles
+                    pl.camera.azimuth = azimuth
+                    pl.show(auto_close=False)
+                    pl.screenshot(img_path)
+                    pl.close()
+                    images.append(img_path)
+            except Exception as e:
+                print(f"Ошибка визуализации слоя {layer}: {e}")
+
+    # Собираем gif из картинок (цикличный, с кручением)
+    if gif_path is not None and len(images) > 0:
+        frames = []
+        for img_path in images:
+            frames.append(imageio.imread(img_path))
+        # Делаем gif цикличным: добавляем обратную последовательность (без дублирования последнего кадра)
+        frames_cycle = frames + frames[-2:0:-1]
+        imageio.mimsave(gif_path, frames_cycle, duration=0.7 /
+                        ((len(frames_cycle))/(max_layer+1)))
+        # Удаляем временные картинки
+        for img_path in images:
+            try:
+                os.remove(img_path)
+            except Exception:
+                pass
+        try:
+            os.rmdir(tmp_dir)
+        except Exception:
+            pass
 
     # Возвращаем объект с обновлёнными метками
     return vg
 
 
-# -----------------------------------------------------------------------------
+# --------цуке-------------------------------------------------------------------
 # ОСНОВНАЯ ТОЧКА ВХОДА
 # -----------------------------------------------------------------------------
 
@@ -273,7 +341,67 @@ def load_dataset(csv_path: str):
     return X, y, groups
 
 
-def main():
+def train_and_evaluate(
+    train_csv: str,
+    val_csv: str,
+    models: list = None,
+    output_dir: str = "checkpoints"
+):
+    """
+    Функция для обучения и оценки классификаторов без использования командной строки.
+
+    Параметры:
+        train_csv (str): Путь к train CSV.
+        val_csv (str): Путь к val CSV.
+        models (list, optional): Список моделей для обучения. По умолчанию ["catboost", "mlp", "rf"].
+        output_dir (str, optional): Каталог для сохранения моделей. По умолчанию "checkpoints".
+    """
+    if models is None:
+        models = ["catboost", "mlp", "rf"]
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    X_train, y_train, _ = load_dataset(train_csv)
+    X_val, y_val, groups_val = load_dataset(val_csv)
+
+    summary: List[Dict[str, str]] = []
+
+    for model_name in models:
+        logger.info(f"Обучение модели: {model_name}")
+        trainer = MODEL_TRAINERS[model_name]
+
+        # Удаляем столбец 'source_file', если он есть, из обучающих и валидационных данных
+        if "source_file" in X_train.columns:
+            X_train = X_train.drop(columns=["source_file"])
+        if "source_file" in X_val.columns:
+            X_val = X_val.drop(columns=["source_file"])
+
+        model = trainer(X_train, y_train, X_val,
+                        y_val) if model_name == "catboost" else trainer(X_train, y_train)
+
+        # Оценка на валидации
+        metrics = evaluate(model, X_val, y_val, groups_val)
+        logger.info(f"Метрики {model_name}: {metrics}")
+
+        # Сохранение модели
+        model_path = os.path.join(output_dir, f"{model_name}_model.pkl")
+        joblib.dump(model, model_path)
+        logger.info(f"Модель сохранена в {model_path}")
+
+        summary.append(
+            {"model": model_name, **{k: f"{v:.4f}" for k, v in metrics.items()}})
+
+    # Итоговая таблица
+    summary_df = pd.DataFrame(summary)
+    summary_csv = os.path.join(output_dir, "training_summary.csv")
+    summary_df.to_csv(summary_csv, index=False)
+    logger.info(f"Сводка сохранена в {summary_csv}")
+
+    return summary_df
+
+
+if __name__ == "__main__":
+    import sys
     parser = argparse.ArgumentParser(
         description="Обучение классификаторов для ForestryVoxel задач.")
     parser.add_argument("--train_csv", required=True,
@@ -286,41 +414,12 @@ def main():
                         default="checkpoints", help="Каталог для сохранения моделей")
     args = parser.parse_args()
 
-    os.makedirs(args.output_dir, exist_ok=True)
-
-    X_train, y_train, _ = load_dataset(args.train_csv)
-    X_val, y_val, groups_val = load_dataset(args.val_csv)
-
-    summary: List[Dict[str, str]] = []
-
-    for model_name in args.models:
-        logger.info(f"Обучение модели: {model_name}")
-        trainer = MODEL_TRAINERS[model_name]
-
-        model = trainer(X_train, y_train, X_val,
-                        y_val) if model_name == "catboost" else trainer(X_train, y_train)
-
-        # Оценка на валидации
-        metrics = evaluate(model, X_val, y_val, groups_val)
-        logger.info(f"Метрики {model_name}: {metrics}")
-
-        # Сохранение модели
-        model_path = os.path.join(args.output_dir, f"{model_name}_model.pkl")
-        joblib.dump(model, model_path)
-        logger.info(f"Модель сохранена в {model_path}")
-
-        summary.append(
-            {"model": model_name, **{k: f"{v:.4f}" for k, v in metrics.items()}})
-
-    # Итоговая таблица
-    summary_df = pd.DataFrame(summary)
-    summary_csv = os.path.join(args.output_dir, "training_summary.csv")
-    summary_df.to_csv(summary_csv, index=False)
-    logger.info(f"Сводка сохранена в {summary_csv}")
-
-
-if __name__ == "__main__":
-    main()
+    train_and_evaluate(
+        train_csv=args.train_csv,
+        val_csv=args.val_csv,
+        models=args.models,
+        output_dir=args.output_dir
+    )
 
 # -----------------------------------------------------------------------------
 # ПРИМЕР ЗАПУСКА (из корня проекта):

@@ -179,8 +179,10 @@ class VOXELGRID:
             'mean_normals_x': [mean_normals[i][0] for i in range(len(mean_normals))],
             'mean_normals_y': [mean_normals[i][1] for i in range(len(mean_normals))],
             'mean_normals_z': [mean_normals[i][2] for i in range(len(mean_normals))],
-            'label': [voxel.label for voxel in self.voxels]
+            'label': [voxel.label for voxel in self.voxels],
         }
+        if hasattr(self, 'proba'):
+            data['proba'] = [voxel.proba for voxel in self.voxels]
         return pd.DataFrame(data)
 
     @property
@@ -228,6 +230,89 @@ class VOXELGRID:
         vis.get_render_option().background_color = [0.25, 0.25, 0.25]
         vis.add_geometry(pcd)
         vis.run()
+
+    def visual_gif(self, path_gif: str, zoom: float = 0.4, point_size: float = 4.0, color_field: str = 'intensity') -> None:
+        """Визуализировать центры вокселей как gif с цветовой схемой blue > green > yellow > red, аналогично show"""
+        import pyvista
+        import numpy as np
+
+        # Получаем центры вокселей, как в show
+        voxel_centers = np.array([
+            voxel.calculate_center(self.voxel_size)
+            for voxel in self.voxels
+            if voxel.calculate_center(self.voxel_size) is not None
+        ])
+
+        if voxel_centers.size == 0:
+            print("Нет центров вокселей для визуализации.")
+            return
+
+        cloud = pyvista.PointSet(voxel_centers)
+
+        def colormap_bgyr(values: np.ndarray) -> np.ndarray:
+            """
+            Кастомная цветовая карта: blue -> green -> yellow -> red
+            values: нормализованный массив [0, 1]
+            """
+            colors = np.zeros((values.shape[0], 3))
+            for i, v in enumerate(values):
+                if v <= 0.33:
+                    t = v / 0.33
+                    colors[i] = [0 * (1-t) + 0 * t, 0 *
+                                 (1-t) + 1 * t, 1 * (1-t) + 0 * t]
+                elif v <= 0.66:
+                    t = (v - 0.33) / (0.66 - 0.33)
+                    colors[i] = [0 * (1-t) + 1 * t, 1, 0]
+                else:
+                    t = (v - 0.66) / (1.0 - 0.66)
+                    colors[i] = [1, 1 * (1-t) + 0 * t, 0]
+            return colors
+
+        # Определяем цвета аналогично show
+        if voxel_centers.size > 0:
+            field_values = np.array([
+                getattr(voxel, color_field).mean()
+                for voxel in self.voxels
+                if hasattr(voxel, color_field) and getattr(voxel, color_field).size > 0
+            ])
+            print(field_values)
+            if color_field == 'original_cloud_index':
+                # Для original_cloud_index используем округление к ближайшему целому
+                field_values = np.array([
+                    round(getattr(voxel, color_field).mean())
+                    for voxel in self.voxels
+                    if hasattr(voxel, color_field) and getattr(voxel, color_field).size > 0
+                ])
+            if field_values.size > 0:
+                # Нормализация в [0, 1]
+                field_values = (field_values - field_values.min()) / \
+                    (field_values.max() - field_values.min() + 1e-8)
+
+                colors = colormap_bgyr(field_values)
+            else:
+                colors = np.ones(
+                    (voxel_centers.shape[0], 3)) * np.array([0.0, 0.0, 1.0])
+        else:
+            colors = np.ones(
+                (voxel_centers.shape[0], 3)) * np.array([0.0, 0.0, 1.0])
+
+        pl = pyvista.Plotter(off_screen=True)
+        pl.add_mesh(
+            cloud,
+            scalars=colors,
+            rgb=True,
+            opacity=1,
+            point_size=point_size,
+            show_scalar_bar=False,
+        )
+        pl.background_color = (0.5, 0.5, 0.5)
+        pl.show(auto_close=False)
+        pl.camera.zoom(zoom)
+        path = pl.generate_orbital_path(
+            n_points=36, shift=cloud.length/3, factor=3.0)
+        pl.open_gif(path_gif)
+        pl.orbit_on_path(path, write_frames=True)
+        pl.close()
 
     def get_voxels_by_layer(self, layer: int, dimension: int = 2) -> list:
         """Возвращает все воксели с указанного слоя"""
