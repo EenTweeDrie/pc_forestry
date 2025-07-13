@@ -121,7 +121,10 @@ class TREE(PCD):
 
     def shift_to_coordinate(self) -> None:
         """ shift points to coordinate """
+        if self.coordinate is None:
+            self.estimate_coordinate()
         self.points = self.points - self.coordinate
+        self.coordinate = np.array([0, 0, 0])
 
     def find_trunk_cluster(self, height_threshold: float = 3.0, intensity_cut: float = 5000) -> None:
         """ find the trunk cluster """

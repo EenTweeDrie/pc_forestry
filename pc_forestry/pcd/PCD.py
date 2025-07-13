@@ -309,8 +309,8 @@ class PCD:
             header = laspy.LasHeader(point_format=3, version="1.4")
             header.point_count = len(self.points)
             las = laspy.LasData(header)
-            las.add_extra_dim(laspy.ExtraBytesParams(
-                name="illuminance", type=np.float32))
+            las.add_extra_dim(laspy.ExtraBytesParams(name="illuminance", type=np.float32))
+            las.add_extra_dim(laspy.ExtraBytesParams(name="original_cloud_index", type=np.float32))
             self.points = np.asarray(self.points, dtype=np.float32)
             las.x = self.points[:, 0]
             las.y = self.points[:, 1]
@@ -327,7 +327,7 @@ class PCD:
             if self.gps_time.size > 0:
                 las.gps_time = self.gps_time
             if self.original_cloud_index.size > 0:
-                las.point_source_id = self.original_cloud_index
+                las.original_cloud_index = self.original_cloud_index
             las.write(file_path)
             if verbose:
                 end = time()-start
@@ -341,8 +341,8 @@ class PCD:
             header = laspy.LasHeader(point_format=3, version="1.4")
             header.point_count = len(self.points)
             las = laspy.LasData(header)
-            las.add_extra_dim(laspy.ExtraBytesParams(
-                name="illuminance", type=np.float32))
+            las.add_extra_dim(laspy.ExtraBytesParams(name="illuminance", type=np.float32))
+            las.add_extra_dim(laspy.ExtraBytesParams(name="original_cloud_index", type=np.float32))
 
             self.points = np.asarray(self.points, dtype=np.float32)
             las.x = self.points[:, 0]
@@ -360,7 +360,7 @@ class PCD:
             if self.gps_time.size > 0:
                 las.gps_time = self.gps_time
             if self.original_cloud_index.size > 0:
-                las.point_source_id = self.original_cloud_index
+                las.original_cloud_index = self.original_cloud_index
             las.write(file_path)
             if verbose:
                 end = time()-start
@@ -596,7 +596,7 @@ class PCD:
                 # np.zeros((points.shape[0], 3), dtype=np.int32)
                 self.rgb = np.empty((0, 3))
             try:
-                self.original_cloud_index = las.point_source_id
+                self.original_cloud_index = las.original_cloud_index
             except:
                 self.original_cloud_index = np.empty(0)
             try:
@@ -621,22 +621,21 @@ class PCD:
                     self.intensity = np.nan_to_num(
                         np.asarray(las.intensity, dtype=np.int32))
                 except:
-                    self.intensity = np.empty(0)  # np.full(points.shape[0], 0)
+                    # np.full(points.shape[0], 0)
+                    self.intensity = np.empty(0)
                 try:
                     self.illuminance = np.nan_to_num(
                         np.asarray(las.illuminance, dtype=np.int32))
                 except:
                     self.illuminance = np.empty(0)
                 try:
-                    rgb = np.vstack(
-                        [las.points.red, las.points.green, las.points.blue]).transpose()
+                    rgb = np.vstack([las.points.red, las.points.green, las.points.blue]).transpose()
                     self.rgb = (rgb // 256).astype(np.uint8)
                 except:
                     # np.zeros((points.shape[0], 3), dtype=np.int32)
                     self.rgb = np.empty((0, 3))
                 try:
-                    self.original_cloud_index = np.nan_to_num(np.asarray(
-                        las.point_source_id, dtype=np.float16))
+                    self.original_cloud_index = np.nan_to_num(np.asarray(las.original_cloud_index, dtype=np.float16))
                 except:
                     self.original_cloud_index = np.empty(0)
                 try:
@@ -654,18 +653,12 @@ class PCD:
                 start = time()
                 print(f"Opening file {file_path} ...")
             df = pd.read_csv(file_path)
-            self.points = df[['x', 'y', 'z']
-                             ].values if 'x' in df.columns else np.empty((0, 3))
-            self.intensity = df['Intensity'].values if 'Intensity' in df.columns else np.empty(
-                0)
-            self.gps_time = df['GpsTime'].values if 'GpsTime' in df.columns else np.empty(
-                0)
-            self.original_cloud_index = df['Original_cloud_index'].values if 'Original_cloud_index' in df.columns else np.empty(
-                0)
-            self.rgb = df[['red', 'green', 'blue']
-                          ].values if 'red' in df.columns else np.empty((0, 3))
-            self.illuminance = df['Illuminance'].values if 'Illuminance' in df.columns else np.empty(
-                0)
+            self.points = df[['x', 'y', 'z']].values if 'x' in df.columns else np.empty((0, 3))
+            self.intensity = df['Intensity'].values if 'Intensity' in df.columns else np.empty(0)
+            self.gps_time = df['GpsTime'].values if 'GpsTime' in df.columns else np.empty(0)
+            self.original_cloud_index = df['Original_cloud_index'].values if 'Original_cloud_index' in df.columns else np.empty(0)
+            self.rgb = df[['red', 'green', 'blue']].values if 'red' in df.columns else np.empty((0, 3))
+            self.illuminance = df['Illuminance'].values if 'Illuminance' in df.columns else np.empty(0)
             if verbose:
                 end = time()-start
                 print(f"Time stacking data: {end:.3f} s")
@@ -688,8 +681,7 @@ class PCD:
             else:
                 if verbose:
                     print("Header is empty. Using default column names.")
-                header = ['X', 'Y', 'Z', 'Intensity',
-                          'R', 'G', 'B', 'Original_cloud_index', 'Gps_Time', 'Illuminance_(PCV)']
+                header = ['X', 'Y', 'Z', 'Intensity', 'R', 'G', 'B', 'Original_cloud_index', 'Gps_Time', 'Illuminance_(PCV)']
             # Initialize dictionaries to store data
             data = {col: [] for col in header}
 
@@ -716,8 +708,7 @@ class PCD:
 
             # Assign data to attributes
             if 'X' in data and 'Y' in data and 'Z' in data:
-                self.points = np.vstack(
-                    (data['X'], data['Y'], data['Z'])).T
+                self.points = np.vstack((data['X'], data['Y'], data['Z'])).T
             if 'Intensity' in data:
                 self.intensity = data['Intensity']
             if 'R' in data and 'G' in data and 'B' in data:
@@ -752,17 +743,13 @@ class PCD:
         """ check if all fields have the same length, and pad with zeros if not """
 
         len_points = len(self.points) if self.points is not None else 0
-        len_intensity = len(
-            self.intensity) if self.intensity is not None else 0
+        len_intensity = len(self.intensity) if self.intensity is not None else 0
         len_rgb = len(self.rgb) if self.rgb is not None else 0
-        len_original_cloud_index = len(
-            self.original_cloud_index) if self.original_cloud_index is not None else 0
+        len_original_cloud_index = len(self.original_cloud_index) if self.original_cloud_index is not None else 0
         len_gps_time = len(self.gps_time) if self.gps_time is not None else 0
-        len_illuminance = len(
-            self.illuminance) if self.illuminance is not None else 0
+        len_illuminance = len(self.illuminance) if self.illuminance is not None else 0
 
-        max_length = max(len_points, len_intensity, len_rgb,
-                         len_original_cloud_index, len_gps_time, len_illuminance)
+        max_length = max(len_points, len_intensity, len_rgb, len_original_cloud_index, len_gps_time, len_illuminance)
 
         if len_points < max_length:
             padding = np.zeros((max_length - len_points, 3))
@@ -785,8 +772,7 @@ class PCD:
         if len_original_cloud_index < max_length:
             padding = np.zeros(max_length - len_original_cloud_index)
             if self.original_cloud_index is not None:
-                self.original_cloud_index = np.hstack(
-                    (self.original_cloud_index, padding))
+                self.original_cloud_index = np.hstack((self.original_cloud_index, padding))
             else:
                 self.original_cloud_index = padding
 
