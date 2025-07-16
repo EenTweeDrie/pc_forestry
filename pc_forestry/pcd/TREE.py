@@ -222,8 +222,8 @@ class TREE(PCD):
     def estimate_diameter(self,
                           num_layers: int = 10,
                           koef: float = 1.05,
-                          low: float = 1.3,
-                          high: float = 1.4
+                          low: float = 1.25,
+                          high: float = 1.35
                           ) -> None:
         """ estimate the diameter of the tree """
         if self.trunk_slice is None:
@@ -294,6 +294,28 @@ class TREE(PCD):
             xc, yc, rh, _ = 0, 0, 0, 0
         r13 = r
         rh13 = rh
+
+        # Рассчитываем радиус на высоте 0.9м
+        idx_labels_09 = np.where(
+            (r_points[:, 2] >= min(self.trunk_slice.points[:, 2]) + 0.85) &
+            (r_points[:, 2] < min(self.trunk_slice.points[:, 2]) + 0.95))
+        points_layer_09 = r_points[idx_labels_09]
+
+        try:
+            _, _, r09, _ = cf.standardLSQ(points_layer_09[:, :2])
+            _, _, rh09, _ = cf.hyperLSQ(points_layer_09[:, :2])
+        except:
+            r09, rh09 = 0, 0
+
+        # Если диаметр на 1.3м больше чем на 0.9м, и расчет на 0.9м успешен,
+        # используем диаметр на 0.9м с понижающим коэффициентом.
+        if r13 > r09 and r09 > 0:
+            logger.debug(f'r13: {r13} > r09: {r09}, using r09 * 0.95: {r09 * 0.95}')
+            r13 = r09 * 0.95
+
+        if rh13 > rh09 and rh09 > 0:
+            logger.debug(f'rh13: {rh13} > rh09: {rh09}, using rh09 * 0.95: {rh09 * 0.95}')
+            rh13 = rh09 * 0.95
 
         if (r13 > koef*r_median) and (r13 < (koef + 0.1)*r_median):
             r_median = r13
