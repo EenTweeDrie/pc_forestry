@@ -596,6 +596,7 @@ class PCD:
                 # np.zeros((points.shape[0], 3), dtype=np.int32)
                 self.rgb = np.empty((0, 3))
             try:
+                # TODO: fix original_cloud_index
                 self.original_cloud_index = las.original_cloud_index
             except:
                 self.original_cloud_index = np.empty(0)
@@ -635,7 +636,7 @@ class PCD:
                     # np.zeros((points.shape[0], 3), dtype=np.int32)
                     self.rgb = np.empty((0, 3))
                 try:
-                    self.original_cloud_index = np.nan_to_num(np.asarray(las.original_cloud_index, dtype=np.float16))
+                    self.original_cloud_index = las.original_cloud_index
                 except:
                     self.original_cloud_index = np.empty(0)
                 try:

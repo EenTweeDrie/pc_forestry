@@ -46,13 +46,15 @@ class DatasetBuilder:
         vg = VOXELGRID.create(pc, voxel_size, verbose=False)
         vg.calculate_distances_to_previous_layer(pc.coordinate)
         vg.calculate_distances_to_coordinate(pc.coordinate)
+        vg.calculate_distances_to_previous_layer_XY(pc.coordinate)
+        vg.calculate_distances_to_coordinate_XY(pc.coordinate)
         df = vg.normalized_df
         return df
 
     @Timer("Объединение всех DataFrame'ов")
     def _combine_individual_datasets(self, dataset_type: str) -> pd.DataFrame:
-        individual_output_dir = self.path_manager.get_individual_dataset_dir(dataset_type)
         all_dfs = []
+        individual_output_dir = self.path_manager.get_individual_dataset_dir(dataset_type)
         for file in os.listdir(individual_output_dir):
             if file.endswith('.csv'):
                 df = pd.read_csv(os.path.join(individual_output_dir, file), sep=';')
@@ -61,6 +63,7 @@ class DatasetBuilder:
         computed_dataset_path = self.path_manager.get_computed_dataset_path(dataset_type)
         combined_df.to_csv(computed_dataset_path, index=False, sep=';')
         logger.info(f"Сборный датасет сохранен в: {computed_dataset_path}")
+        logger.info(f"все")
         return combined_df
 
     @Timer("Построение датасета")
@@ -80,8 +83,9 @@ class DatasetBuilder:
             df = self._process_tree_file(file_path, voxel_size)
             if df is not None:
                 df['source_file'] = os.path.basename(file_path)
+                extension = os.path.splitext(file_path)[1]
                 all_dfs.append(df)
-                output_filename = os.path.basename(file_path).replace('.las', '.csv')
+                output_filename = os.path.basename(file_path).replace(extension, '.csv')
                 individual_save_path = os.path.join(self.path_manager.get_individual_dataset_dir(dataset_type), output_filename)
                 df.to_csv(individual_save_path, index=False, sep=';')
                 logger.debug(f"Индивидуальный DataFrame сохранен в: {individual_save_path}")
@@ -89,7 +93,7 @@ class DatasetBuilder:
 
         self._combine_individual_datasets(dataset_type)
 
-    def build(self, types=['train', 'val', 'test']):
+    def build(self, types=['train', 'val', 'test'], force=False):
         """
         Запускает процесс построения датасетов для указанных типов.
         """
@@ -97,4 +101,5 @@ class DatasetBuilder:
         if 'voxel_size' not in self._datasets_config:
             logger.warning("Параметр 'voxel_size' не задан явно, используется значение по умолчанию 0.5.")
         for dataset_type in types:
-            self._build_dataset(dataset_type, voxel_size)
+            if force or not os.path.exists(self.path_manager.get_computed_dataset_path(dataset_type)):
+                self._build_dataset(dataset_type, voxel_size)

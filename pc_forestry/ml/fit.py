@@ -189,6 +189,79 @@ MODEL_TRAINERS = {
     "rf": train_random_forest,
 }
 
+
+class MLTrainer:
+    """
+    Класс для выполнения процесса обучения и оценки моделей.
+    """
+
+    def __init__(self, output_dir: str = "checkpoints"):
+        """
+        Инициализирует тренер.
+
+        Args:
+            output_dir (str): Каталог для сохранения моделей и сводки.
+        """
+        os.makedirs(output_dir, exist_ok=True)
+        self.output_dir = output_dir
+        self.summary: List[Dict[str, any]] = []
+
+    def run(self, train_csv: str, val_csv: str, models: List[str]):
+        """
+        Запускает обучение и оценку для указанных моделей.
+
+        Args:
+            train_csv (str): Путь к обучающему CSV.
+            val_csv (str): Путь к валидационному CSV.
+            models (List[str]): Список названий моделей для обучения.
+        """
+        X_train, y_train, _ = load_dataset(train_csv)
+        X_val, y_val, groups_val = load_dataset(val_csv)
+
+        # Удаляем столбец 'source_file', если он есть
+        if "source_file" in X_train.columns:
+            X_train = X_train.drop(columns=["source_file"])
+        if "source_file" in X_val.columns:
+            X_val = X_val.drop(columns=["source_file"])
+
+        for model_name in models:
+            logger.info(f"Обучение модели: {model_name}")
+            trainer_func = MODEL_TRAINERS[model_name]
+
+            model = trainer_func(X_train, y_train, X_val, y_val) \
+                if model_name == "catboost" \
+                else trainer_func(X_train, y_train)
+
+            metrics = evaluate(model, X_val, y_val, groups_val)
+            logger.info(f"Метрики {model_name}: {metrics}")
+
+            model_path = os.path.join(self.output_dir, f"{model_name}_model.pkl")
+            joblib.dump(model, model_path)
+            logger.info(f"Модель сохранена в {model_path}")
+
+            self.summary.append({"model": model_name, **metrics})
+
+        return self
+
+    def save_summary(self) -> pd.DataFrame:
+        """
+        Сохраняет сводку по обучению в CSV-файл.
+
+        Returns:
+            pd.DataFrame: DataFrame со сводкой.
+        """
+        summary_df = pd.DataFrame(self.summary)
+        # Форматируем численные столбцы
+        for col in summary_df.columns:
+            if pd.api.types.is_numeric_dtype(summary_df[col]):
+                summary_df[col] = summary_df[col].map('{:.4f}'.format)
+
+        summary_csv = os.path.join(self.output_dir, "training_summary.csv")
+        summary_df.to_csv(summary_csv, index=False)
+        logger.info(f"Сводка сохранена в {summary_csv}")
+        return summary_df
+
+
 # -----------------------------------------------------------------------------
 # PREDICT ДЛЯ ТЕСТА (РАБОТА С PCD ФАЙЛАМИ)
 # -----------------------------------------------------------------------------
@@ -341,65 +414,6 @@ def load_dataset(csv_path: str):
     return X, y, groups
 
 
-def train_and_evaluate(
-    train_csv: str,
-    val_csv: str,
-    models: list = None,
-    output_dir: str = "checkpoints"
-):
-    """
-    Функция для обучения и оценки классификаторов без использования командной строки.
-
-    Параметры:
-        train_csv (str): Путь к train CSV.
-        val_csv (str): Путь к val CSV.
-        models (list, optional): Список моделей для обучения. По умолчанию ["catboost", "mlp", "rf"].
-        output_dir (str, optional): Каталог для сохранения моделей. По умолчанию "checkpoints".
-    """
-    if models is None:
-        models = ["catboost", "mlp", "rf"]
-
-    os.makedirs(output_dir, exist_ok=True)
-
-    X_train, y_train, _ = load_dataset(train_csv)
-    X_val, y_val, groups_val = load_dataset(val_csv)
-
-    summary: List[Dict[str, str]] = []
-
-    for model_name in models:
-        logger.info(f"Обучение модели: {model_name}")
-        trainer = MODEL_TRAINERS[model_name]
-
-        # Удаляем столбец 'source_file', если он есть, из обучающих и валидационных данных
-        if "source_file" in X_train.columns:
-            X_train = X_train.drop(columns=["source_file"])
-        if "source_file" in X_val.columns:
-            X_val = X_val.drop(columns=["source_file"])
-
-        model = trainer(X_train, y_train, X_val,
-                        y_val) if model_name == "catboost" else trainer(X_train, y_train)
-
-        # Оценка на валидации
-        metrics = evaluate(model, X_val, y_val, groups_val)
-        logger.info(f"Метрики {model_name}: {metrics}")
-
-        # Сохранение модели
-        model_path = os.path.join(output_dir, f"{model_name}_model.pkl")
-        joblib.dump(model, model_path)
-        logger.info(f"Модель сохранена в {model_path}")
-
-        summary.append(
-            {"model": model_name, **{k: f"{v:.4f}" for k, v in metrics.items()}})
-
-    # Итоговая таблица
-    summary_df = pd.DataFrame(summary)
-    summary_csv = os.path.join(output_dir, "training_summary.csv")
-    summary_df.to_csv(summary_csv, index=False)
-    logger.info(f"Сводка сохранена в {summary_csv}")
-
-    return summary_df
-
-
 if __name__ == "__main__":
     import sys
     parser = argparse.ArgumentParser(
@@ -414,12 +428,13 @@ if __name__ == "__main__":
                         default="checkpoints", help="Каталог для сохранения моделей")
     args = parser.parse_args()
 
-    train_and_evaluate(
+    trainer = MLTrainer(output_dir=args.output_dir)
+    trainer.run(
         train_csv=args.train_csv,
         val_csv=args.val_csv,
-        models=args.models,
-        output_dir=args.output_dir
+        models=args.models
     )
+    trainer.save_summary()
 
 # -----------------------------------------------------------------------------
 # ПРИМЕР ЗАПУСКА (из корня проекта):

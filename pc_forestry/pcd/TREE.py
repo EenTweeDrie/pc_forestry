@@ -178,15 +178,14 @@ class TREE(PCD):
                 {'probability': probabilities, 'cluster_index': clusters_indices, 'points': cluser_points})
             pdf = pdf.sort_values(by='probability', ascending=False)
             pdf = pdf.reset_index(drop=True)
-            logger.debug(pdf)
+            # logger.debug(pdf)
 
             # Step 5: Get the best cluster
             best_index = None
             for i in range(len(pdf)):
                 choosen_index = pdf.iloc[i]['cluster_index']
                 if (pdf.iloc[i]['probability'] > 0):
-                    choosen_cluster = lower_points[cluster_labels ==
-                                                   choosen_index]
+                    choosen_cluster = lower_points[cluster_labels == choosen_index]
                     if max(choosen_cluster[:, 2]) - min(choosen_cluster[:, 2]) > height_threshold/2:
                         if min(choosen_cluster[:, 2]) - min(lower_points[:, 2]) < 0.25:
                             best_index = choosen_index

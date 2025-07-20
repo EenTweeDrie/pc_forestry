@@ -103,7 +103,7 @@ def build_dataset(input_dir, output_dir, dataset_type, voxel_size):
 
     combined_filename = f"{dataset_type}_dataset.csv"
     combined_save_path = os.path.join(combined_output_dir, combined_filename)
-    combined_df.to_csv(combined_save_path, index=False)
+    combined_df.to_csv(combined_save_path, index=False, sep=';')
 
     logger.info(f"Сборный датасет сохранен в: {combined_save_path}")
     logger.info("Сборка датасета завершена.")
