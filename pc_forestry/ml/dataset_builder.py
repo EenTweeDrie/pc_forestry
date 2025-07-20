@@ -59,7 +59,7 @@ class DatasetBuilder:
                 all_dfs.append(df)
         combined_df = pd.concat(all_dfs, ignore_index=True)
         computed_dataset_path = self.path_manager.get_computed_dataset_path(dataset_type)
-        combined_df.to_csv(computed_dataset_path, index=False)
+        combined_df.to_csv(computed_dataset_path, index=False, sep=';')
         logger.info(f"Сборный датасет сохранен в: {computed_dataset_path}")
         return combined_df
 
