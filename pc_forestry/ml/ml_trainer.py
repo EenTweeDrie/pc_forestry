@@ -14,7 +14,7 @@ from sklearn.ensemble import RandomForestClassifier
 from .ml_validator import MLValidator
 
 # Константа для количества ядер CPU
-CPU_CORES = 1
+CPU_CORES = -1
 
 
 def train_catboost(X_train: pd.DataFrame, y_train: pd.Series,
