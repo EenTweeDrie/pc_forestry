@@ -23,8 +23,8 @@ class DatasetBuilder:
     @Timer("Подготовка файла")
     def _prepare_tree_file(self, file_path: str) -> TREE:
         pc = self.TREE.read(file_path)
-        pc.estimate_normals()
-        pc.calculate_illuminance()
+        pc.compute_feature('normals')
+        pc.compute_feature('illuminance')
         return pc
 
     @Timer("Подготовка файлов")
@@ -49,7 +49,7 @@ class DatasetBuilder:
         with Timer(f"Обработка файла {os.path.basename(file_path)}"):
             pc = self.TREE.read(file_path)
             pc.shift_to_coordinate()
-            pc.estimate_normals()
+            pc.compute_feature('normals')
             vg = VOXELGRID.create(pc, voxel_size, verbose=False)
             vg.calculate_distances_to_previous_layer(pc.coordinate)
             vg.calculate_distances_to_coordinate(pc.coordinate)

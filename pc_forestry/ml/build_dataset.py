@@ -29,10 +29,10 @@ def process_tree_file(file_path, voxel_size=0.5):
         pc.shift_to_zero()
 
         logger.info("Расчет освещенности")
-        pc.calculate_illuminance()
+        pc.compute_feature('illuminance')
 
         logger.info("Оценка нормалей")
-        pc.estimate_normals()
+        pc.compute_feature('normals')
 
         logger.info("Оценка координат")
         pc.estimate_coordinate()

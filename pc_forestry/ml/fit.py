@@ -18,8 +18,8 @@
 # import numpy as np
 # pc = TREE.read(os.path.join(folder_dir, 'tree_0001.pcd'))
 # pc.shift_to_zero()
-# pc.calculate_illuminance()
-# pc.estimate_normals()
+# pc.compute_feature('illuminance')
+# pc.compute_feature('normals')
 # pc.estimate_coordinate()
 # vg = VOXELGRID.create(pc, 0.5, verbose=True)
 
@@ -302,8 +302,8 @@ def predict_for_tree(model, file_path: str, voxel_size: float = 0.5, gif_path: s
 
     pc = TREE.read(file_path)
     pc.shift_to_zero()
-    # pc.calculate_illuminance()
-    pc.estimate_normals()
+    # pc.compute_feature('illuminance')
+    pc.compute_feature('normals')
     pc.estimate_coordinate()
 
     vg = VOXELGRID.create(pc, voxel_size, verbose=False)
