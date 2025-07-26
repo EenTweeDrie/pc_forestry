@@ -69,8 +69,13 @@ class MLPipeline:
         train_csv = self.path_manager.get_computed_dataset_path('train')
         val_csv = self.path_manager.get_computed_dataset_path('val')
 
-        assert os.path.exists(train_csv) and os.path.exists(
-            val_csv), ("CSV файлы не найдены. Запустите compute_datasets() перед обучением.")
+        assert os.path.exists(train_csv), "Обучающий CSV файл не найден. Запустите compute_datasets() перед обучением."
+
+        # Проверяем существование валидационного файла
+        val_csv_exists = os.path.exists(val_csv)
+        if not val_csv_exists:
+            print("Валидационный CSV файл не найден. Обучение будет проводиться только на обучающем наборе с использованием кросс-валидации.")
+            val_csv = None
 
         checkpoints_dir = os.path.dirname(
             self.path_manager.get_model_path(self._model_type))
@@ -90,16 +95,19 @@ class MLPipeline:
         self._model = joblib.load(model_path)
         print(f"Модель '{self._model_type}' обучена и загружена.")
 
-        # 3. Оценка на валидационном наборе
-        X_val, y_val, groups_val = load_dataset(val_csv)
-        if "source_file" in X_val.columns:
-            X_val = X_val.drop(columns=["source_file"])
+        # 3. Оценка на валидационном наборе (если он существует)
+        if val_csv_exists:
+            X_val, y_val, groups_val = load_dataset(val_csv)
+            if "source_file" in X_val.columns:
+                X_val = X_val.drop(columns=["source_file"])
 
-        metrics = self.validator.evaluate(
-            self._model, X_val, y_val, groups_val)
-        print("\nОценка на валидационном наборе:")
-        for metric, value in metrics.items():
-            print(f"  {metric}: {value:.4f}")
+            metrics = self.validator.evaluate(
+                self._model, X_val, y_val, groups_val)
+            print("\nОценка на валидационном наборе:")
+            for metric, value in metrics.items():
+                print(f"  {metric}: {value:.4f}")
+        else:
+            print("\nВалидационный набор недоступен. Оценка пропущена.")
 
         return self
 

@@ -1,10 +1,10 @@
 import os
-from typing import List, Dict
+from typing import List, Dict, Optional
 import pandas as pd
 import joblib
 from loguru import logger
 import numpy as np
-from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import GridSearchCV, KFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.neural_network import MLPClassifier
@@ -18,7 +18,7 @@ CPU_CORES = -1
 
 
 def train_catboost(X_train: pd.DataFrame, y_train: pd.Series,
-                   X_val: pd.DataFrame, y_val: pd.Series, use_gridsearch: bool = True) -> CatBoostClassifier:
+                   X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None, use_gridsearch: bool = True) -> CatBoostClassifier:
     """Обучение CatBoostClassifier с опциональной GridSearchCV по выбранным гиперпараметрам."""
     base_model = CatBoostClassifier(
         loss_function="Logloss",
@@ -38,15 +38,25 @@ def train_catboost(X_train: pd.DataFrame, y_train: pd.Series,
             "iterations": [300, 500],
         }
 
+        cv = 3 if X_val is None else [(list(range(len(X_train))), list(range(len(X_train), len(X_train) + len(X_val))))]
+
+        if X_val is not None:
+            # Объединяем train и val для GridSearchCV
+            X_combined = pd.concat([X_train, X_val], ignore_index=True)
+            y_combined = pd.concat([y_train, y_val], ignore_index=True)
+        else:
+            X_combined = X_train
+            y_combined = y_train
+
         grid = GridSearchCV(
             estimator=base_model,
             param_grid=param_grid,
             scoring="roc_auc",
-            cv=3,
+            cv=cv,
             n_jobs=CPU_CORES,  # Используем 4 ядра для параллельной кросс-валидации
             verbose=1,
         )
-        grid.fit(X_train, y_train)
+        grid.fit(X_combined, y_combined)
         best_model: CatBoostClassifier = grid.best_estimator_
         logger.info(f"Лучшие параметры CatBoost: {grid.best_params_}")
         return best_model
@@ -58,13 +68,16 @@ def train_catboost(X_train: pd.DataFrame, y_train: pd.Series,
             l2_leaf_reg=3,
             iterations=500
         )
-        base_model.fit(X_train, y_train)
+        if X_val is not None and y_val is not None:
+            base_model.fit(X_train, y_train, eval_set=(X_val, y_val))
+        else:
+            base_model.fit(X_train, y_train)
         logger.info("CatBoost обучен с базовыми параметрами")
         return base_model
 
 
 def train_xgboost(X_train: pd.DataFrame, y_train: pd.Series,
-                  X_val: pd.DataFrame, y_val: pd.Series, use_gridsearch: bool = True):
+                  X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None, use_gridsearch: bool = True):
     """Обучение XGBoost - один из лучших градиентных бустингов."""
     from xgboost import XGBClassifier
 
@@ -88,15 +101,25 @@ def train_xgboost(X_train: pd.DataFrame, y_train: pd.Series,
             "reg_lambda": [1, 1.5, 2],
         }
 
+        if X_val is not None:
+            # Объединяем train и val для GridSearchCV
+            X_combined = pd.concat([X_train, X_val], ignore_index=True)
+            y_combined = pd.concat([y_train, y_val], ignore_index=True)
+            cv = [(list(range(len(X_train))), list(range(len(X_train), len(X_train) + len(X_val))))]
+        else:
+            X_combined = X_train
+            y_combined = y_train
+            cv = KFold(n_splits=3, shuffle=True, random_state=42)
+
         grid = GridSearchCV(
             estimator=base_model,
             param_grid=param_grid,
             scoring="roc_auc",
-            cv=3,
+            cv=cv,
             n_jobs=CPU_CORES,
             verbose=1,
         )
-        grid.fit(X_train, y_train)
+        grid.fit(X_combined, y_combined)
         logger.info(f"Лучшие параметры XGBoost: {grid.best_params_}")
         return grid.best_estimator_
     else:
@@ -116,7 +139,7 @@ def train_xgboost(X_train: pd.DataFrame, y_train: pd.Series,
 
 
 def train_lightgbm(X_train: pd.DataFrame, y_train: pd.Series,
-                   X_val: pd.DataFrame, y_val: pd.Series, use_gridsearch: bool = True):
+                   X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None, use_gridsearch: bool = True):
     """Обучение LightGBM - быстрый и эффективный градиентный бустинг."""
     from lightgbm import LGBMClassifier
 
@@ -142,15 +165,25 @@ def train_lightgbm(X_train: pd.DataFrame, y_train: pd.Series,
             "reg_lambda": [0, 0.1, 1],
         }
 
+        if X_val is not None:
+            # Объединяем train и val для GridSearchCV
+            X_combined = pd.concat([X_train, X_val], ignore_index=True)
+            y_combined = pd.concat([y_train, y_val], ignore_index=True)
+            cv = [(list(range(len(X_train))), list(range(len(X_train), len(X_train) + len(X_val))))]
+        else:
+            X_combined = X_train
+            y_combined = y_train
+            cv = KFold(n_splits=3, shuffle=True, random_state=42)
+
         grid = GridSearchCV(
             estimator=base_model,
             param_grid=param_grid,
             scoring="roc_auc",
-            cv=3,
+            cv=cv,
             n_jobs=CPU_CORES,
             verbose=1,
         )
-        grid.fit(X_train, y_train)
+        grid.fit(X_combined, y_combined)
         logger.info(f"Лучшие параметры LightGBM: {grid.best_params_}")
         return grid.best_estimator_
     else:
@@ -171,7 +204,7 @@ def train_lightgbm(X_train: pd.DataFrame, y_train: pd.Series,
 
 
 def train_tabnet(X_train: pd.DataFrame, y_train: pd.Series,
-                 X_val: pd.DataFrame, y_val: pd.Series):
+                 X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None):
     """Обучение TabNet - нейронная сеть специально для табличных данных."""
     from pytorch_tabnet.tab_model import TabNetClassifier
     import torch
@@ -179,8 +212,6 @@ def train_tabnet(X_train: pd.DataFrame, y_train: pd.Series,
     # TabNet работает с numpy массивами
     X_train_np = X_train.values.astype(np.float32)
     y_train_np = y_train.values
-    X_val_np = X_val.values.astype(np.float32)
-    y_val_np = y_val.values
 
     model = TabNetClassifier(
         n_d=64,  # Размерность представления
@@ -199,11 +230,20 @@ def train_tabnet(X_train: pd.DataFrame, y_train: pd.Series,
         device_name="cuda" if torch.cuda.is_available() else "cpu",
     )
 
+    if X_val is not None and y_val is not None:
+        X_val_np = X_val.values.astype(np.float32)
+        y_val_np = y_val.values
+        eval_set = [(X_val_np, y_val_np)]
+        eval_name = ["val"]
+    else:
+        eval_set = None
+        eval_name = None
+
     model.fit(
         X_train_np, y_train_np,
-        eval_set=[(X_val_np, y_val_np)],
-        eval_name=["val"],
-        eval_metric=["auc"],
+        eval_set=eval_set,
+        eval_name=eval_name,
+        eval_metric=["auc"] if eval_set else None,
         max_epochs=200,
         patience=20,
         batch_size=1024,
@@ -215,7 +255,8 @@ def train_tabnet(X_train: pd.DataFrame, y_train: pd.Series,
     return model
 
 
-def train_mlp(X_train: pd.DataFrame, y_train: pd.Series, use_gridsearch: bool = True) -> Pipeline:
+def train_mlp(X_train: pd.DataFrame, y_train: pd.Series,
+              X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None, use_gridsearch: bool = True) -> Pipeline:
     """Обучение MLPClassifier внутри Pipeline со StandardScaler."""
     pipe = Pipeline([
         ("scaler", StandardScaler()),
@@ -236,15 +277,25 @@ def train_mlp(X_train: pd.DataFrame, y_train: pd.Series, use_gridsearch: bool = 
             "mlp__batch_size": [32, 64, 128],  # Добавляем настройку размера батча
         }
 
+        if X_val is not None:
+            # Объединяем train и val для GridSearchCV
+            X_combined = pd.concat([X_train, X_val], ignore_index=True)
+            y_combined = pd.concat([y_train, y_val], ignore_index=True)
+            cv = [(list(range(len(X_train))), list(range(len(X_train), len(X_train) + len(X_val))))]
+        else:
+            X_combined = X_train
+            y_combined = y_train
+            cv = KFold(n_splits=3, shuffle=True, random_state=42)
+
         grid = GridSearchCV(
             estimator=pipe,
             param_grid=param_grid,
             scoring="roc_auc",
-            cv=3,
+            cv=cv,
             n_jobs=CPU_CORES,  # Используем 4 ядра
             verbose=1,
         )
-        grid.fit(X_train, y_train)
+        grid.fit(X_combined, y_combined)
         logger.info(f"Лучшие параметры MLP: {grid.best_params_}")
         return grid.best_estimator_
     else:
@@ -260,7 +311,8 @@ def train_mlp(X_train: pd.DataFrame, y_train: pd.Series, use_gridsearch: bool = 
         return pipe
 
 
-def train_svm(X_train: pd.DataFrame, y_train: pd.Series, use_gridsearch: bool = True) -> Pipeline:
+def train_svm(X_train: pd.DataFrame, y_train: pd.Series,
+              X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None, use_gridsearch: bool = True) -> Pipeline:
     """Обучение SVM с RBF ядром - классический мощный алгоритм."""
     from sklearn.svm import SVC
 
@@ -279,15 +331,25 @@ def train_svm(X_train: pd.DataFrame, y_train: pd.Series, use_gridsearch: bool = 
             "svm__kernel": ["rbf", "poly"],
         }
 
+        if X_val is not None:
+            # Объединяем train и val для GridSearchCV
+            X_combined = pd.concat([X_train, X_val], ignore_index=True)
+            y_combined = pd.concat([y_train, y_val], ignore_index=True)
+            cv = [(list(range(len(X_train))), list(range(len(X_train), len(X_train) + len(X_val))))]
+        else:
+            X_combined = X_train
+            y_combined = y_train
+            cv = KFold(n_splits=3, shuffle=True, random_state=42)
+
         grid = GridSearchCV(
             estimator=pipe,
             param_grid=param_grid,
             scoring="roc_auc",
-            cv=3,
+            cv=cv,
             n_jobs=CPU_CORES,
             verbose=1,
         )
-        grid.fit(X_train, y_train)
+        grid.fit(X_combined, y_combined)
         logger.info(f"Лучшие параметры SVM: {grid.best_params_}")
         return grid.best_estimator_
     else:
@@ -302,7 +364,8 @@ def train_svm(X_train: pd.DataFrame, y_train: pd.Series, use_gridsearch: bool = 
         return pipe
 
 
-def train_extra_trees(X_train: pd.DataFrame, y_train: pd.Series, use_gridsearch: bool = True):
+def train_extra_trees(X_train: pd.DataFrame, y_train: pd.Series,
+                      X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None, use_gridsearch: bool = True):
     """Обучение ExtraTreesClassifier - улучшенная версия Random Forest."""
     from sklearn.ensemble import ExtraTreesClassifier
 
@@ -321,15 +384,25 @@ def train_extra_trees(X_train: pd.DataFrame, y_train: pd.Series, use_gridsearch:
             "max_features": ["sqrt", "log2", None],
         }
 
+        if X_val is not None:
+            # Объединяем train и val для GridSearchCV
+            X_combined = pd.concat([X_train, X_val], ignore_index=True)
+            y_combined = pd.concat([y_train, y_val], ignore_index=True)
+            cv = [(list(range(len(X_train))), list(range(len(X_train), len(X_train) + len(X_val))))]
+        else:
+            X_combined = X_train
+            y_combined = y_train
+            cv = KFold(n_splits=3, shuffle=True, random_state=42)
+
         grid = GridSearchCV(
             estimator=base_model,
             param_grid=param_grid,
             scoring="roc_auc",
-            cv=3,
+            cv=cv,
             n_jobs=CPU_CORES,
             verbose=1,
         )
-        grid.fit(X_train, y_train)
+        grid.fit(X_combined, y_combined)
         logger.info(f"Лучшие параметры ExtraTrees: {grid.best_params_}")
         return grid.best_estimator_
     else:
@@ -346,7 +419,8 @@ def train_extra_trees(X_train: pd.DataFrame, y_train: pd.Series, use_gridsearch:
         return base_model
 
 
-def train_random_forest(X_train: pd.DataFrame, y_train: pd.Series) -> RandomForestClassifier:
+def train_random_forest(X_train: pd.DataFrame, y_train: pd.Series,
+                        X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None) -> RandomForestClassifier:
     """Простая модель RandomForest как baseline."""
     rf = RandomForestClassifier(
         n_estimators=500,  # Увеличиваем количество деревьев
@@ -362,7 +436,7 @@ def train_random_forest(X_train: pd.DataFrame, y_train: pd.Series) -> RandomFore
 
 
 def train_extended_ensemble(X_train: pd.DataFrame, y_train: pd.Series,
-                            X_val: pd.DataFrame, y_val: pd.Series):
+                            X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None):
     """Расширенный ансамбль из лучших моделей с использованием предобученных моделей."""
     from sklearn.ensemble import VotingClassifier
     import os
@@ -409,7 +483,7 @@ def train_extended_ensemble(X_train: pd.DataFrame, y_train: pd.Series,
 
 
 def train_voting_ensemble(X_train: pd.DataFrame, y_train: pd.Series,
-                          X_val: pd.DataFrame, y_val: pd.Series):
+                          X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None):
     """Ансамбль из лучших моделей с использованием предобученных моделей."""
     from sklearn.ensemble import VotingClassifier
     import os
@@ -456,7 +530,7 @@ def train_voting_ensemble(X_train: pd.DataFrame, y_train: pd.Series,
 
 
 def train_stacking_ensemble(X_train: pd.DataFrame, y_train: pd.Series,
-                            X_val: pd.DataFrame, y_val: pd.Series):
+                            X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None):
     """Стекинг ансамбль с использованием предобученных моделей."""
     from sklearn.ensemble import StackingClassifier
     from sklearn.linear_model import LogisticRegression
@@ -492,14 +566,23 @@ def train_stacking_ensemble(X_train: pd.DataFrame, y_train: pd.Series,
     meta_model = LogisticRegression(random_state=42, max_iter=1000)
 
     # Создаем стекинг ансамбль
+    if X_val is not None:
+        cv = [(list(range(len(X_train))), list(range(len(X_train), len(X_train) + len(X_val))))]
+        X_combined = pd.concat([X_train, X_val], ignore_index=True)
+        y_combined = pd.concat([y_train, y_val], ignore_index=True)
+    else:
+        cv = KFold(n_splits=5, shuffle=True, random_state=42)
+        X_combined = X_train
+        y_combined = y_train
+
     stacking_ensemble = StackingClassifier(
         estimators=base_models,
         final_estimator=meta_model,
-        cv=5,  # Кросс-валидация для обучения мета-модели
+        cv=cv,  # Кросс-валидация для обучения мета-модели
         n_jobs=CPU_CORES,
     )
 
-    stacking_ensemble.fit(X_train, y_train)
+    stacking_ensemble.fit(X_combined, y_combined)
     logger.info(f"Стекинг ансамбль из {len(base_models)} предобученных моделей обучен успешно")
     return stacking_ensemble
 
@@ -545,32 +628,34 @@ class MLTrainer:
         os.makedirs(output_dir, exist_ok=True)
         self.output_dir = output_dir
 
-    def train(self, train_csv: str, val_csv: str, models: List[str]):
+    def train(self, train_csv: str, val_csv: Optional[str] = None, models: List[str] = None):
         """
         Запускает обучение для указанных моделей.
 
         Args:
             train_csv (str): Путь к обучающему CSV.
-            val_csv (str): Путь к валидационному CSV (используется для CatBoost).
+            val_csv (Optional[str]): Путь к валидационному CSV (если None, используется KFold).
             models (List[str]): Список названий моделей для обучения.
         """
         X_train, y_train, _ = load_dataset(train_csv)
-        X_val, y_val, _ = load_dataset(val_csv)
+
+        if val_csv is not None:
+            X_val, y_val, _ = load_dataset(val_csv)
+            # Удаляем столбец 'source_file', если он есть
+            if "source_file" in X_val.columns:
+                X_val = X_val.drop(columns=["source_file"])
+        else:
+            X_val, y_val = None, None
 
         # Удаляем столбец 'source_file', если он есть
         if "source_file" in X_train.columns:
             X_train = X_train.drop(columns=["source_file"])
-        if "source_file" in X_val.columns:
-            X_val = X_val.drop(columns=["source_file"])
 
         for model_name in models:
             logger.info(f"Обучение модели: {model_name}")
             trainer_func = MODEL_TRAINERS[model_name]
 
-            if model_name in ["catboost", "extended_ensemble", "tabnet", "voting_ensemble", "stacking_ensemble"]:
-                model = trainer_func(X_train, y_train, X_val, y_val)
-            else:
-                model = trainer_func(X_train, y_train)
+            model = trainer_func(X_train, y_train, X_val, y_val)
 
             model_path = os.path.join(self.output_dir, f"{model_name}_model.pkl")
             joblib.dump(model, model_path)

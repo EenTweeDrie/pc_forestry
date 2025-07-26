@@ -20,19 +20,19 @@ class PCD:
                  points=None,
                  intensity=None,
                  rgb=None,
+                 normals=None,
                  original_cloud_index=None,
                  gps_time=None,
-                 illuminance=None,
-                 normals=None):
+                 illuminance=None):
         self._data = {
             'points': points if points is not None else np.empty((0, 3)),
             'intensity': intensity if intensity is not None else np.empty(0),
             'rgb': rgb if rgb is not None else np.empty((0, 3)),
+            'normals': normals if normals is not None else np.empty((0, 3)),
             'original_cloud_index': original_cloud_index if original_cloud_index is not None else np.empty(0),
             'gps_time': gps_time if gps_time is not None else np.empty(0),
             'illuminance': illuminance if illuminance is not None else np.empty(0),
         }
-        self._normals = normals if normals is not None else np.empty((0, 3))
 
     @property
     def df(self) -> pd.DataFrame:
@@ -47,10 +47,14 @@ class PCD:
             data['r'] = self.r
             data['g'] = self.g
             data['b'] = self.b
+        if 'normals' in self._data and self._data['normals'].size > 0:
+            data['nx'] = self.nx
+            data['ny'] = self.ny
+            data['nz'] = self.nz
 
         # Add all other (scalar) fields
         for name, values in self._data.items():
-            if name not in ['points', 'rgb'] and values.size > 0:
+            if name not in ['points', 'rgb', 'normals'] and values.size > 0:
                 data[name] = values
 
         return pd.DataFrame(data)
@@ -62,7 +66,7 @@ class PCD:
         # Format-specific handlers for saving data
         # This makes adding new formats or changing existing ones much cleaner.
         pcd_handler = {
-            'fields': ['x', 'y', 'z', 'rgb', 'GpsTime', 'Original_cloud_index', 'Intensity', 'Illuminance'],
+            'fields': ['x', 'y', 'z', 'rgb', 'GpsTime', 'Original_cloud_index', 'Intensity', 'Illuminance', 'normal_x', 'normal_y', 'normal_z'],
             'data_map': {
                 'points': (lambda p: p, slice(0, 3)),
                 'rgb': (lambda c: pypcd.encode_rgb_for_pcl(np.uint8(c)), 3),
@@ -70,12 +74,16 @@ class PCD:
                 'original_cloud_index': (lambda o: o, 5),
                 'intensity': (lambda i: i, 6),
                 'illuminance': (lambda i: i, 7),
+                'normals': (lambda n: n, slice(8, 11)),
             }
         }
         las_handler = {
             'extra_dims': [
                 laspy.ExtraBytesParams(name="illuminance", type=np.float32),
-                laspy.ExtraBytesParams(name="original_cloud_index", type=np.float32)
+                laspy.ExtraBytesParams(name="original_cloud_index", type=np.float32),
+                laspy.ExtraBytesParams(name="nx", type=np.float32),
+                laspy.ExtraBytesParams(name="ny", type=np.float32),
+                laspy.ExtraBytesParams(name="nz", type=np.float32)
             ],
             'attr_map': {
                 'points': lambda las, p: setattr(las, 'points', p),
@@ -83,7 +91,8 @@ class PCD:
                 'intensity': lambda las, i: setattr(las, 'intensity', i),
                 'illuminance': lambda las, i: setattr(las, 'illuminance', i),
                 'gps_time': lambda las, g: setattr(las, 'gps_time', g),
-                'original_cloud_index': lambda las, o: setattr(las, 'original_cloud_index', o)
+                'original_cloud_index': lambda las, o: setattr(las, 'original_cloud_index', o),
+                'normals': lambda las, n: (setattr(las, 'nx', n[:, 0]), setattr(las, 'ny', n[:, 1]), setattr(las, 'nz', n[:, 2]))
             }
         }
 
@@ -133,6 +142,7 @@ class PCD:
             df = df.rename(columns={
                 'x': 'X', 'y': 'Y', 'z': 'Z',
                 'intensity': 'Intensity', 'r': 'R', 'g': 'G', 'b': 'B',
+                'nx': 'Nx', 'ny': 'Ny', 'nz': 'Nz',
                 'original_cloud_index': 'Original_cloud_index',
                 'gps_time': 'GpsTime', 'illuminance': 'Illuminance_(PCV)'
             })
@@ -180,6 +190,7 @@ class PCD:
             # Mapping from PCL field names to PCD attribute names
             field_map = {
                 'x': ('points', slice(0, 3)),
+                ('normal_x', 'normal_y', 'normal_z'): ('normals', None),
                 'Intensity': ('intensity', None),
                 'Illuminance': ('illuminance', None),
                 'rgb': ('rgb', None),
@@ -190,6 +201,11 @@ class PCD:
             metadata_fields = cloud.get_metadata()["fields"]
             for pcl_name, (pcd_name, col_slice) in field_map.items():
                 try:
+                    if isinstance(pcl_name, tuple):
+                        idxs = [metadata_fields.index(n) for n in pcl_name]
+                        setattr(self, pcd_name, data[:, idxs])
+                        continue
+
                     idx = metadata_fields.index(pcl_name)
                     if pcd_name == 'points':
                         self.points = data[:, idx:idx+3]
@@ -197,7 +213,7 @@ class PCD:
                         self.rgb = np.nan_to_num(pypcd.decode_rgb_from_pcl(data[:, idx]))
                     else:
                         setattr(self, pcd_name, np.nan_to_num(np.asarray(data[:, idx])))
-                except ValueError:
+                except (ValueError, IndexError):
                     # Field not found in file, will be empty
                     pass
 
@@ -220,6 +236,7 @@ class PCD:
                 'intensity': lambda l: l.intensity,
                 'illuminance': lambda l: l.illuminance,
                 'rgb': lambda l: (np.vstack([l.red, l.green, l.blue]).transpose() // 256).astype(np.uint8),
+                'normals': lambda l: np.vstack([l.nx, l.ny, l.nz]).transpose(),
                 'original_cloud_index': lambda l: l.original_cloud_index,
                 'gps_time': lambda l: l.gps_time
             }
@@ -238,6 +255,7 @@ class PCD:
             col_map = {
                 'points': (['x', 'y', 'z'], lambda d: d.values),
                 'rgb': (['red', 'green', 'blue'], lambda d: d.values),
+                'normals': (['nx', 'ny', 'nz'], lambda d: d.values),
                 'intensity': (['Intensity'], lambda d: d.values.ravel()),
                 'gps_time': (['GpsTime'], lambda d: d.values.ravel()),
                 'original_cloud_index': (['Original_cloud_index'], lambda d: d.values.ravel()),
@@ -270,20 +288,26 @@ class PCD:
             col_map = {
                 'points': (['X', 'Y', 'Z'], lambda d: d.values),
                 'rgb': (['R', 'G', 'B'], lambda d: d.values),
+                'normals': (['Nx', 'Ny', 'Nz'], lambda d: d.values),
                 'intensity': (['Intensity'], lambda d: d.values.ravel()),
                 'gps_time': (['GpsTime', 'Gps_Time'], lambda d: d.values.ravel()),
                 'original_cloud_index': (['Original_cloud_index'], lambda d: d.values.ravel()),
                 'illuminance': (['Illuminance_(PCV)'], lambda d: d.values.ravel()),
             }
 
-            for pcd_name, (cols, func) in col_map.items():
-                # Try all possible column names for a field
+            # Handle multi-column fields
+            if all(c in df.columns for c in col_map['points'][0]):
+                self.points = col_map['points'][1](df[col_map['points'][0]])
+            if all(c in df.columns for c in col_map['rgb'][0]):
+                self.rgb = col_map['rgb'][1](df[col_map['rgb'][0]])
+            if all(c in df.columns for c in col_map['normals'][0]):
+                self.normals = col_map['normals'][1](df[col_map['normals'][0]])
+
+            # Handle single-column fields
+            single_col_map = {k: v for k, v in col_map.items() if k not in ['points', 'rgb', 'normals']}
+            for pcd_name, (cols, func) in single_col_map.items():
                 for col_alias in cols:
-                    if col_alias in df.columns and pcd_name == 'points':
-                        if all(c in df.columns for c in cols):
-                            self.points = func(df[cols])
-                            break
-                    elif col_alias in df.columns:
+                    if col_alias in df.columns:
                         setattr(self, pcd_name, func(df[[col_alias]]))
                         break
 
@@ -358,8 +382,6 @@ class PCD:
         for name, values in self._data.items():
             if values.size > 0:
                 self._data[name] = values[centroids]
-        if self._normals.size > 0:
-            self._normals = self._normals[centroids]
 
     def index_cut(self, idx_labels: np.ndarray) -> None:
         """ cut points and all other fields using indexes """
@@ -372,12 +394,6 @@ class PCD:
                     # We create an empty array of the correct shape.
                     shape = (len(idx_labels), values.shape[1]) if values.ndim > 1 else (len(idx_labels),)
                     self._data[name] = np.empty(shape)
-
-        if self._normals.size > 0:
-            try:
-                self._normals = self._normals[idx_labels]
-            except IndexError:
-                self._normals = np.empty((len(idx_labels), 3))
 
     def _generate_hemisphere_rays(self, normal_p: np.ndarray, num_rays: int) -> np.ndarray:
         """Helper method to generate random rays on a hemisphere oriented by a normal vector."""
@@ -396,7 +412,7 @@ class PCD:
             rays.append(v)
         return np.array(rays)
 
-    @Timer("Быстрый расчет освещенности")
+    @Timer("Расчет освещенности")
     def calculate_illuminance(self,
                               num_rays: int = 32,
                               max_ray_distance: float = 0.5,
@@ -448,22 +464,46 @@ class PCD:
         pcd.points = o3d.utility.Vector3dVector(self.points)
         pcd.estimate_normals(
             search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=radius, max_nn=max_nn))
-        self._normals = np.asarray(pcd.normals)
+        self.normals = np.asarray(pcd.normals)
 
     def get_normals(self, radius: float = 0.1, max_nn: int = 30) -> np.ndarray:
         """ get normals """
-        if self._normals is None or self._normals.shape[0] != len(self.points):
+        if self.normals is None or self.normals.shape[0] != len(self.points):
             logger.debug("Estimating normals")
             self.estimate_normals(radius=radius, max_nn=max_nn)
-        return self._normals
+        return self.normals
 
     @property
     def normals(self) -> np.ndarray:
-        return self.get_normals()
+        return self._data['normals']
 
     @normals.setter
     def normals(self, value):
-        self._normals = value
+        self._data['normals'] = np.asarray(value)
+
+    @property
+    def nx(self):
+        return self.normals[:, 0]
+
+    @nx.setter
+    def nx(self, value):
+        self.normals[:, 0] = value
+
+    @property
+    def ny(self):
+        return self.normals[:, 1]
+
+    @ny.setter
+    def ny(self, value):
+        self.normals[:, 1] = value
+
+    @property
+    def nz(self):
+        return self.normals[:, 2]
+
+    @nz.setter
+    def nz(self, value):
+        self.normals[:, 2] = value
 
     def unique(self) -> None:
         """ leaves only unique point values """
@@ -488,7 +528,6 @@ class PCD:
         # If one cloud is empty, just copy the other
         if num_points_self == 0:
             self._data = copy.deepcopy(other._data)
-            self._normals = copy.deepcopy(other._normals)
             return
         if num_points_other == 0:
             return
@@ -497,9 +536,6 @@ class PCD:
             other_values = other._data.get(name)
             if other_values is not None and other_values.size > 0:
                 self._data[name] = np.concatenate((self_values, other_values), axis=0)
-
-        if self._normals.size > 0 and other._normals.size > 0:
-            self.normals = np.concatenate((self.normals, other.normals), axis=0)
 
     def show(self, color_field: str = 'intensity') -> None:
         """ show PCD object """
@@ -554,7 +590,6 @@ class PCD:
         """ replace NaN to 0 in all fields """
         for name, values in self._data.items():
             self._data[name] = np.nan_to_num(values)
-        self._normals = np.nan_to_num(self._normals)
 
     @Timer("Визуализация PCD как gif")
     def visual_gif(self, path_gif: str, zoom: float = 0.4, point_size: float = 4.0, color_field: str = 'rgb') -> None:
