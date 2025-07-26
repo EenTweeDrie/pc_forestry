@@ -165,6 +165,10 @@ class RGB(VectorFeature):
     def name(self) -> str: return 'rgb'
 
     @property
+    def default_value(self) -> np.ndarray:
+        return np.empty((0, self.num_columns), dtype=np.uint8)
+
+    @property
     def df_column_names(self): return ['r', 'g', 'b']
 
     @property
@@ -235,6 +239,10 @@ class Normals(VectorFeature):
 class OriginalCloudIndex(ScalarFeature):
     @property
     def name(self) -> str: return 'original_cloud_index'
+
+    @property
+    def default_value(self) -> np.ndarray:
+        return np.empty(0, dtype=np.int32)
 
     @property
     def pcd_field_names(self): return ['Original_cloud_index']

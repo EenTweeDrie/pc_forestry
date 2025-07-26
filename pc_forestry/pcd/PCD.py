@@ -69,8 +69,9 @@ class PCD:
         for feature in self._features.values():
             if feature.size > 0:
                 if isinstance(feature, VectorFeature):
-                    for i, col_name in enumerate(feature.df_column_names):
-                        df_data[col_name] = feature.data[:, i]
+                    if hasattr(feature.data, 'ndim') and feature.data.ndim > 1:
+                        for i, col_name in enumerate(feature.df_column_names):
+                            df_data[col_name] = feature.data[:, i]
                 else:
                     df_data[feature.name] = feature.data
         return pd.DataFrame(df_data)
@@ -81,7 +82,7 @@ class PCD:
 
         @Timer(f"Сохранение файла {file_path}")
         def save_pcd(file_path, verbose=False):
-            num_points = len(self.points)
+            num_points = len(self.points) if hasattr(self.points, '__len__') else 0
             pcd_fields = []
             pcd_data_list = []
 
@@ -276,43 +277,41 @@ class PCD:
         self.check_and_pad_fields()
 
     def check_and_pad_fields(self):
-        """ check if all fields have the same length, and pad with zeros if not """
-        num_points = len(self.points)
-        if num_points == 0:
-            lengths = [len(f.data) for f in self._features.values() if hasattr(f.data, '__len__') and f.size > 0]
-            if not lengths:
-                return
-            num_points = max(lengths) if lengths else 0
-            if num_points == 0:
-                return
+        """
+        Проверяет, все ли поля имеют одинаковую длину. Если нет, то для полей с
+        нулевой длиной создаются массивы нулей, равные по длине максимальной
+        длине среди всех полей.
+        """
+        # Сначала находим максимальную длину среди всех полей
+        num_points = 0
+        all_lengths = []
+        for f in self._features.values():
+            # Убедимся, что у данных есть размерность (не 0-d array) перед вызовом len()
+            if hasattr(f.data, 'ndim') and f.data.ndim > 0:
+                all_lengths.append(len(f.data))
 
-        # Set points length first if it's zero
-        if len(self.points) == 0 and num_points > 0:
+        if all_lengths:
+            num_points = max(all_lengths)
+
+        if num_points == 0:
+            # Если все поля пустые, делать нечего
+            return
+
+        # Убедимся, что points инициализированы, если нужно
+        if self._features['points'].size == 0:
             self.points = np.zeros((num_points, 3))
 
+        # Теперь проходим по всем полям и дополняем те, что пусты
         for name, feature in self._features.items():
-            values = feature.data
-            if values is None:
-                continue
+            if feature.size < num_points:
+                if isinstance(feature, VectorFeature):
+                    shape = (num_points, feature.num_columns)
+                else:  # ScalarFeature
+                    shape = (num_points,)
 
-            current_len = len(values)
-            if current_len == num_points:
-                continue
-
-            # Determine shape for padding
-            if values.ndim > 1:
-                pad_shape = (num_points - current_len, values.shape[1])
-                pad_func = np.vstack
-            else:
-                pad_shape = (num_points - current_len,)
-                pad_func = np.hstack
-
-            padding = np.zeros(pad_shape, dtype=values.dtype)
-
-            if current_len > 0:
-                feature.data = pad_func((values, padding))
-            else:
-                feature.data = padding
+                # Используем тип данных по умолчанию или float32
+                dtype = feature.default_value.dtype
+                feature.data = np.zeros(shape, dtype=dtype)
 
     def clone(self) -> 'PCD':
         """ clone PCD object """
@@ -333,7 +332,7 @@ class PCD:
     def index_cut(self, idx_labels: np.ndarray) -> None:
         """ cut points and all other fields using indexes """
         for name, feature in self._features.items():
-            if feature.size > 0 and len(feature.data) > 0:
+            if feature.size > 0 and hasattr(feature.data, '__len__') and len(feature.data) > 0:
                 try:
                     feature.data = feature.data[idx_labels]
                 except IndexError:
@@ -364,8 +363,8 @@ class PCD:
         other.check_and_pad_fields()
         self.check_and_pad_fields()
 
-        num_points_self = len(self.points)
-        num_points_other = len(other.points)
+        num_points_self = len(self.points) if hasattr(self.points, '__len__') else 0
+        num_points_other = len(other.points) if hasattr(other.points, '__len__') else 0
 
         # If one cloud is empty, just copy the other
         if num_points_self == 0:

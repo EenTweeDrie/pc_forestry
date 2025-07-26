@@ -14,7 +14,7 @@ from sklearn.ensemble import RandomForestClassifier
 from .ml_validator import MLValidator
 
 # Константа для количества ядер CPU
-CPU_CORES = -1
+CPU_CORES = 4
 
 
 def train_catboost(X_train: pd.DataFrame, y_train: pd.Series,
@@ -25,7 +25,6 @@ def train_catboost(X_train: pd.DataFrame, y_train: pd.Series,
         eval_metric="Logloss",
         verbose=False,
         random_state=42,
-        thread_count=CPU_CORES,  # Используем 4 ядра
         task_type="GPU",  # Используем GPU для ускорения
         devices="0",      # Используем первую GPU
     )

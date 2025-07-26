@@ -37,6 +37,26 @@ class MLValidator:
                 y.values, proba, group_ids.values)
         return metrics
 
+    def calculate_metrics(self, y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
+        """
+        Вычисляет метрики на основе истинных и предсказанных меток.
+
+        Args:
+            y_true (np.ndarray): Истинные метки.
+            y_pred (np.ndarray): Предсказанные метки.
+
+        Returns:
+            Dict[str, float]: Словарь с метриками.
+        """
+        metrics = {
+            "accuracy": accuracy_score(y_true, y_pred),
+            "precision": precision_score(y_true, y_pred),
+            "recall": recall_score(y_true, y_pred),
+            "f1": f1_score(y_true, y_pred),
+            "mcc": matthews_corrcoef(y_true, y_pred),
+        }
+        return metrics
+
     def _qauc_by_group(self, y_true: np.ndarray, y_pred: np.ndarray, groups: np.ndarray) -> float:
         """
         Среднее ROC-AUC, рассчитанное отдельно для каждой группы.

@@ -18,11 +18,10 @@ class DatasetBuilder:
     def __init__(self, path_manager: PathManager, datasets_config: dict):
         self.path_manager = path_manager
         self._datasets_config = datasets_config
-        self.TREE = TREE
 
     @Timer("Подготовка файла")
     def _prepare_tree_file(self, file_path: str) -> TREE:
-        pc = self.TREE.read(file_path)
+        pc = TREE.read(file_path)
         pc.compute_feature('normals')
         pc.compute_feature('illuminance')
         return pc
@@ -47,15 +46,17 @@ class DatasetBuilder:
 
     def _process_tree_file(self, file_path: str, voxel_size: float) -> pd.DataFrame:
         with Timer(f"Обработка файла {os.path.basename(file_path)}"):
-            pc = self.TREE.read(file_path)
+            pc = TREE.read(file_path)
             pc.shift_to_coordinate()
             pc.compute_feature('normals')
+            print(pc.illuminance)
             vg = VOXELGRID.create(pc, voxel_size, verbose=False)
             vg.calculate_distances_to_previous_layer(pc.coordinate)
             vg.calculate_distances_to_coordinate(pc.coordinate)
             vg.calculate_distances_to_previous_layer_XY(pc.coordinate)
             vg.calculate_distances_to_coordinate_XY(pc.coordinate)
             df = vg.normalized_df
+            print(df)
             return df
 
     @Timer("Объединение всех DataFrame'ов")

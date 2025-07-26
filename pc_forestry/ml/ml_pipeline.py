@@ -3,12 +3,13 @@ import glob
 import pandas as pd
 import joblib
 from tqdm import tqdm
-from typing import Optional, Any
+from typing import Optional, Any, Tuple
 import logging
+import numpy as np
 
 from .ml_trainer import MLTrainer, load_dataset, MODEL_TRAINERS
 from .ml_validator import MLValidator
-from .fit import predict_for_tree  # fit пока остается
+from .ml_inferencer import MLInferencer
 from .dataset_builder import DatasetBuilder
 from ..path_manager import PathManager
 from ..pcd.TREE import TREE
@@ -48,6 +49,33 @@ class MLPipeline:
             f"Модель {model_type} не поддерживается. "
             f"Поддерживаемые модели: {list(MODEL_TRAINERS.keys())}")
         self._model_type = model_type
+        return self
+
+    def set_model(self, model_path: str) -> 'MLPipeline':
+        """
+        Загружает предварительно обученную модель из файла.
+
+        Args:
+            model_path (str): Путь к файлу модели (обычно .pkl).
+
+        Returns:
+            MLPipeline: Экземпляр для цепочки вызовов.
+        """
+        assert os.path.exists(model_path), f"Файл модели не найден: {model_path}"
+
+        self._model = joblib.load(model_path)
+        print(f"Модель успешно загружена из: {model_path}")
+
+        # Попытка определить тип модели из имени файла для согласованности
+        model_filename = os.path.basename(model_path)
+        for model_type_key in MODEL_TRAINERS.keys():
+            if model_type_key in model_filename:
+                self._model_type = model_type_key
+                print(f"Тип модели определен как '{self._model_type}'.")
+                break
+        else:
+            logger.warning("Не удалось автоматически определить тип модели из имени файла.")
+
         return self
 
     def set_datasets_config(self, config: dict):
@@ -111,32 +139,6 @@ class MLPipeline:
 
         return self
 
-    def eval(self) -> 'MLPipeline':
-        """
-        Оценивает обученную модель на тестовом наборе данных.
-        """
-        assert self._model is not None, "Модель не обучена. Вызовите train() сначала."
-
-        test_csv_path = self.path_manager.get_computed_dataset_path('test')
-
-        if not os.path.exists(test_csv_path):
-            print("Тестовый CSV не найден. Пропуск оценки на тестовом наборе.")
-            print("Чтобы создать его, используйте compute_datasets().")
-            return self
-
-        X_test, y_test, groups_test = load_dataset(test_csv_path)
-
-        if "source_file" in X_test.columns:
-            X_test = X_test.drop(columns=["source_file"])
-
-        metrics = self.validator.evaluate(
-            self._model, X_test, y_test, groups_test)
-        print("\nОценка на тестовом наборе:")
-        for metric, value in metrics.items():
-            print(f"  {metric}: {value:.4f}")
-
-        return self
-
     def fit(self, file_path: str) -> Any:
         """
         Выполняет инференс (предсказание) для одного файла с данными о дереве.
@@ -152,6 +154,57 @@ class MLPipeline:
         assert os.path.exists(file_path), f"Файл не найден: {file_path}"
 
         print(f"Выполнение предсказания для файла: {file_path}")
-        voxelgrid_with_predictions = predict_for_tree(self._model, file_path)
+        inferencer = MLInferencer(self._model)
+        voxelgrid_with_predictions = inferencer.predict_for_tree(file_path)
         print("Предсказание завершено.")
         return voxelgrid_with_predictions
+
+    def eval(self) -> 'MLPipeline':
+        """
+        Оценивает обученную модель на тестовом наборе данных, используя end-to-end логику `fit`.
+        Для каждого файла из тестового набора выполняется инференс,
+        а затем предсказанные метки сравниваются с истинными.
+        """
+        assert self._model is not None, "Модель не обучена. Вызовите train() сначала."
+        test_dir = self.path_manager.get_prepared_files_dir('test')
+        test_files = self.path_manager.get_file_paths(test_dir)
+
+        all_true_labels = []
+        all_pred_labels = []
+
+        print(f"\nЗапуск E2E оценки на {len(test_files)} тестовых файлах...")
+        for file_path in tqdm(test_files, desc="Оценка тестовых файлов"):
+            # 1. Получаем предсказания
+            predicted_voxelgrid = self.fit(file_path)
+            pred_labels = np.array([voxel.label for voxel in predicted_voxelgrid.voxels])
+
+            # 2. Загружаем исходные данные с истинными метками
+            true_tree = TREE.read(file_path)
+            true_tree.shift_to_coordinate()
+            true_voxelgrid = VOXELGRID.create(true_tree, voxel_size=predicted_voxelgrid.voxel_size)
+            true_labels = np.array([voxel.label for voxel in true_voxelgrid.voxels])
+
+            # Убедимся, что количество вокселей совпадает
+            if len(pred_labels) != len(true_labels):
+                logger.warning(
+                    f"Пропуск файла {os.path.basename(file_path)}: "
+                    f"несоответствие количества вокселей "
+                    f"({len(pred_labels)} предсказано, {len(true_labels)} истинных)."
+                )
+                continue
+
+            all_pred_labels.extend(pred_labels)
+            all_true_labels.extend(true_labels)
+
+        if not all_true_labels:
+            print("Не удалось обработать ни одного файла для оценки.")
+            return self
+
+        # 3. Считаем метрики
+        metrics = self.validator.calculate_metrics(np.array(all_true_labels), np.array(all_pred_labels))
+
+        print("\nИтоговая оценка на тестовом наборе (E2E):")
+        for metric, value in metrics.items():
+            print(f"  {metric}: {value:.4f}")
+
+        return self

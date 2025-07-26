@@ -494,7 +494,7 @@ class VOXELGRID:
         index = np.array([voxel.index for voxel in self.voxels])
         max_layer = max([index[i][2] for i in range(len(index))])
         distances = {}
-        for layer in tqdm(range(max_layer+1), desc="Calculating distances to coordinate"):
+        for layer in range(max_layer+1):
             distances_layer = self.calculate_distances_to_coordinate_by_layer(coordinate, layer)
             distances.update(distances_layer)
         return distances
@@ -504,7 +504,7 @@ class VOXELGRID:
         max_layer = max([index[i][2] for i in range(len(index))])
         distances = {}
 
-        for layer in tqdm(range(max_layer+1), desc="Calculating distances to previous layer"):
+        for layer in range(max_layer+1):
             distances_layer = self.calculate_distances_to_previous_layer_by_layer(coordinate, layer)
             distances.update(distances_layer)
         return distances
@@ -514,7 +514,7 @@ class VOXELGRID:
         max_layer = max([index[i][2] for i in range(len(index))])
         distances = {}
 
-        for layer in tqdm(range(max_layer+1), desc="Calculating distances to previous layer XY"):
+        for layer in range(max_layer+1):
             distances_layer = self.calculate_distances_to_previous_layer_by_layer_XY(coordinate, layer)
             distances.update(distances_layer)
         return distances
@@ -523,7 +523,7 @@ class VOXELGRID:
         index = np.array([voxel.index for voxel in self.voxels])
         max_layer = max([index[i][2] for i in range(len(index))])
         distances = {}
-        for layer in tqdm(range(max_layer+1), desc="Calculating distances to coordinate XY"):
+        for layer in range(max_layer+1):
             distances_layer = self.calculate_distances_to_coordinate_by_layer_XY(coordinate, layer)
             distances.update(distances_layer)
         return distances
