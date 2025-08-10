@@ -76,12 +76,12 @@ class PCD:
                     df_data[feature.name] = feature.data
         return pd.DataFrame(df_data)
 
-    def save(self, file_path: str, verbose: bool = False) -> None:
+    def save(self, file_path: str) -> None:
         """Saves the point cloud to a file, dispatching to the correct format handler."""
         file_format = file_path.split('.')[-1]
 
         @Timer(f"Сохранение файла {file_path}")
-        def save_pcd(file_path, verbose=False):
+        def save_pcd(file_path):
             num_points = len(self.points) if hasattr(self.points, '__len__') else 0
             pcd_fields = []
             pcd_data_list = []
@@ -111,7 +111,7 @@ class PCD:
             new_cloud.save_pcd(file_path, 'binary')
 
         @Timer(f"Сохранение файла {file_path}")
-        def save_las_laz(file_path, verbose=False):
+        def save_las_laz(file_path):
             header = laspy.LasHeader(point_format=3, version="1.4")
             if self.points.size > 0:
                 header.point_count = len(self.points)
@@ -130,11 +130,11 @@ class PCD:
             las.write(file_path)
 
         @Timer(f"Сохранение файла {file_path}")
-        def save_csv(file_path, verbose=False):
+        def save_csv(file_pathe):
             self.df.to_csv(file_path, index=False)
 
         @Timer(f"Сохранение файла {file_path}")
-        def save_txt(file_path, verbose=False):
+        def save_txt(file_path):
             df = self.df
             # Dynamically rename columns for txt format
             rename_map = {}
@@ -148,7 +148,7 @@ class PCD:
                 df.to_csv(f, sep=' ', index=False, header=False, lineterminator='\n')
 
         @Timer(f"Сохранение файла {file_path}")
-        def save_h5(file_path, verbose=False):
+        def save_h5(file_path):
             with h5py.File(file_path, 'w') as h5f:
                 for name, feature in self._features.items():
                     if feature.size > 0:
@@ -165,21 +165,21 @@ class PCD:
         }
 
         if file_format in savers:
-            savers[file_format](file_path, verbose=verbose)
+            savers[file_format](file_path)
         else:
             print("invalid format")
 
     @classmethod
-    def read(cls, file_path: str, verbose: bool = False, features=None) -> 'PCD':
+    def read(cls, file_path: str, features=None) -> 'PCD':
         instance = cls(features)
-        instance.open(file_path, verbose=verbose)
+        instance.open(file_path,)
         return instance
 
-    def open(self, file_path: str, verbose: bool = False) -> None:
+    def open(self, file_path: str) -> None:
         file_ext = "." + file_path.split('.')[-1]
 
         @Timer(f"Открытие файла {file_path}")
-        def open_pcd(self, file_path, verbose=False):
+        def open_pcd(self, file_path):
             cloud = pypcd.PointCloud.from_path(file_path)
             cloud_data = cloud.pc_data
             metadata_fields = cloud.get_metadata()["fields"]
@@ -199,14 +199,14 @@ class PCD:
                     pass  # Field not found
 
         @Timer(f"Открытие файла {file_path}")
-        def open_h5(self, file_path, verbose=False):
+        def open_h5(self, file_path):
             with h5py.File(file_path, 'r') as h5f:
                 for name, feature in self._features.items():
                     if name in h5f:
                         feature.data = np.asarray(h5f.get(name))
 
         @Timer(f"Открытие файла {file_path}")
-        def open_las_laz(self, file_path, verbose=False):
+        def open_las_laz(self, file_path):
             las = laspy.read(file_path)
             for feature in self._features.values():
                 try:
@@ -217,7 +217,7 @@ class PCD:
                     pass  # Field not in las file
 
         @Timer(f"Открытие файла {file_path}")
-        def open_csv(self, file_path, verbose=False):
+        def open_csv(self, file_path):
             df = pd.read_csv(file_path)
             for feature in self._features.values():
                 cols = feature.df_column_names
@@ -228,33 +228,47 @@ class PCD:
                     feature.data = data
 
         @Timer(f"Открытие файла {file_path}")
-        def open_txt(self, file_path, verbose=False):
+        def open_txt(self, file_path):
             with open(file_path, 'r') as file:
                 header_line = file.readline().strip()
 
             if header_line.startswith('//'):
                 header = [col.strip('/') for col in header_line.split()]
-            else:  # Basic fallback if no header
-                data_preview = np.loadtxt(file_path, max_rows=1)
-                num_cols = data_preview.shape[0] if data_preview.ndim > 0 else 0
-                header = [f'col_{i}' for i in range(num_cols)]
-                if verbose:
-                    print(f"No header found, creating generic column names.")
+            else:
+                raise ValueError(
+                    f"Заголовок не найден в файле {file_path}. "
+                    f"Ожидалась строка, начинающаяся с '//'."
+                )
 
-            df = pd.read_csv(file_path, sep=r'\s+', comment='/', names=header, header=None)
+            # Параметр `names` в pandas требует уникальных имен. Чтобы обработать
+            # возможные дубликаты в заголовке файла, мы читаем данные без заголовка
+            # и затем выбираем столбцы по их целочисленному индексу.
+            df = pd.read_csv(file_path, sep=r'\s+', comment='/', header=None)
+
+            # Мы создаем отображение каждого уникального имени столбца на индекс его
+            # первого появления. Это гарантирует, что если имя столбца дублируется,
+            # мы будем рассматривать только первое из них, выполняя требование
+            # "читать только уникальные".
+            unique_header_map = {name: i for i, name in reversed(list(enumerate(header)))}
 
             for feature in self._features.values():
-                # Map from feature standard names to txt header names
-                column_map = feature.txt_column_map  # e.g. {'nx': 'Nx', 'ny': 'Ny', 'nz': 'Nz'}
-                # Find which of the feature's columns are present in the txt header
-                present_txt_cols = [
-                    column_map[df_col]
-                    for df_col in feature.df_column_names
-                    if df_col in column_map and column_map[df_col] in header
-                ]
+                # Отображение стандартных имен признаков на имена в заголовке txt
+                column_map = feature.txt_column_map  # например, {'nx': 'Nx', 'ny': 'Ny', 'nz': 'Nz'}
 
-                if present_txt_cols:
-                    data = df[present_txt_cols].values
+                # Находим целочисленные индексы столбцов, необходимых для этого признака
+                col_indices = []
+                for df_col in feature.df_column_names:
+                    txt_col_name = column_map.get(df_col)
+                    if txt_col_name and txt_col_name in unique_header_map:
+                        col_indices.append(unique_header_map[txt_col_name])
+
+                if col_indices:
+                    # Удаляем дубликаты индексов, сохраняя порядок, на случай, если
+                    # несколько столбцов признака отображаются на один и тот же
+                    # исходный столбец в txt-файле.
+                    unique_indices = list(dict.fromkeys(col_indices))
+
+                    data = df.iloc[:, unique_indices].values
                     if isinstance(feature, ScalarFeature):
                         data = data.ravel()
                     feature.data = data
@@ -270,7 +284,7 @@ class PCD:
         }
 
         if file_ext in openers:
-            openers[file_ext](self, file_path, verbose=verbose)
+            openers[file_ext](self, file_path)
         else:
             print("invalid format")
 
@@ -318,7 +332,7 @@ class PCD:
         return copy.deepcopy(self)
 
     @Timer("Сэмплирование точек (FPS)")
-    def sample_fps(self, num_sample: int, verbose: bool = False) -> None:
+    def sample_fps(self, num_sample: int) -> None:
         """ sampling 'num_sample' points from 'PCD' class via farthest point sampling algorithm """
         np_points = np.asarray([self.points])
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

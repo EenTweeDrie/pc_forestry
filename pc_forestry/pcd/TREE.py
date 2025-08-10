@@ -113,9 +113,9 @@ class TREE(PCD):
         return instance
 
     @classmethod
-    def read(cls, file_path: str, verbose: bool = False) -> 'PCD':
+    def read(cls, file_path: str) -> 'PCD':
         instance = cls()
-        instance.open(file_path, verbose=verbose)
+        instance.open(file_path)
         instance.name = file_path.split('/')[-1].split('.')[0]
         return instance
 
@@ -167,7 +167,7 @@ class TREE(PCD):
                 if i == -1:
                     continue
                 cluster = lower_points[cluster_labels == i]
-                if cluster.shape[0] > 100:
+                if cluster.shape[0] >= 512:
                     probabilities.append(predict_cluster(cluster, device))
                     clusters_indices.append(i)
                     # debug

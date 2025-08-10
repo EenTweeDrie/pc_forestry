@@ -82,6 +82,10 @@ class MLPipeline:
         self._datasets_config = config
         return self
 
+    def update_datasets_config(self, config: dict):
+        self._datasets_config.update(config)
+        return self
+
     def get_model_binary(self) -> Optional[Any]:
         assert self._model is not None, "Модель еще не обучена или не загружена."
         return self._model

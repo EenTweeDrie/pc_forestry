@@ -49,14 +49,12 @@ class DatasetBuilder:
             pc = TREE.read(file_path)
             pc.shift_to_coordinate()
             pc.compute_feature('normals')
-            print(pc.illuminance)
             vg = VOXELGRID.create(pc, voxel_size, verbose=False)
             vg.calculate_distances_to_previous_layer(pc.coordinate)
             vg.calculate_distances_to_coordinate(pc.coordinate)
             vg.calculate_distances_to_previous_layer_XY(pc.coordinate)
             vg.calculate_distances_to_coordinate_XY(pc.coordinate)
             df = vg.normalized_df
-            print(df)
             return df
 
     @Timer("Объединение всех DataFrame'ов")
@@ -75,7 +73,7 @@ class DatasetBuilder:
         return combined_df
 
     @Timer("Построение датасета")
-    def _build_dataset(self, dataset_type: str, voxel_size: float):
+    def _build_dataset(self, dataset_type: str, voxel_size: float, force: bool):
         input_dir = self.path_manager.get_prepared_files_dir(dataset_type)
         initial_dir = self.path_manager.get_dataset_dir(dataset_type)
 
@@ -96,15 +94,25 @@ class DatasetBuilder:
 
         all_dfs = []
         for file_path in tqdm(file_paths, desc=f"Обработка {dataset_type} датасета"):
-            df = self._process_tree_file(file_path, voxel_size)
+            extension = os.path.splitext(file_path)[1]
+            output_filename = os.path.basename(file_path).replace(extension, '.csv')
+            individual_save_path = os.path.join(self.path_manager.get_individual_dataset_dir(dataset_type), output_filename)
+
+            df = None
+            if not force and os.path.exists(individual_save_path):
+                logger.debug(f"Загрузка существующего индивидуального файла: {individual_save_path}")
+                df = pd.read_csv(individual_save_path, sep=';')
+            else:
+                processed_df = self._process_tree_file(file_path, voxel_size)
+                if processed_df is not None:
+                    df = processed_df
+                    df['source_file'] = os.path.basename(file_path)
+                    df.to_csv(individual_save_path, index=False, sep=';')
+                    logger.debug(f"Индивидуальный DataFrame сохранен в: {individual_save_path}")
+
             if df is not None:
-                df['source_file'] = os.path.basename(file_path)
-                extension = os.path.splitext(file_path)[1]
                 all_dfs.append(df)
-                output_filename = os.path.basename(file_path).replace(extension, '.csv')
-                individual_save_path = os.path.join(self.path_manager.get_individual_dataset_dir(dataset_type), output_filename)
-                df.to_csv(individual_save_path, index=False, sep=';')
-                logger.debug(f"Индивидуальный DataFrame сохранен в: {individual_save_path}")
+
         assert all_dfs, "Не удалось обработать ни одного файла. Сборный датасет не будет создан."
 
         self._combine_individual_datasets(dataset_type)
@@ -118,4 +126,4 @@ class DatasetBuilder:
             logger.warning("Параметр 'voxel_size' не задан явно, используется значение по умолчанию 0.5.")
         for dataset_type in types:
             if force or not os.path.exists(self.path_manager.get_computed_dataset_path(dataset_type)):
-                self._build_dataset(dataset_type, voxel_size)
+                self._build_dataset(dataset_type, voxel_size, force)
