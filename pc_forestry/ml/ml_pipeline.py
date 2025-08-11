@@ -161,24 +161,10 @@ class MLPipeline:
 
         return self
 
-    def fit(self, file_path: str) -> Any:
-        """
-        Выполняет инференс (предсказание) для одного файла с данными о дереве.
-
-        Args:
-            file_path (str): Путь к файлу (.pcd, .las, .txt).
-
-        Returns:
-            VOXELGRID: Объект воксельной сетки с результатами предсказания.
-                       Каждый воксель будет иметь атрибут `label`.
-        """
+    def fit(self, pc: TREE) -> Any:
         assert self._model is not None, "Модель не обучена. Вызовите train() сначала."
-        assert os.path.exists(file_path), f"Файл не найден: {file_path}"
-
-        print(f"Выполнение предсказания для файла: {file_path}")
         inferencer = MLInferencer(self._model)
-        voxelgrid_with_predictions = inferencer.predict_for_tree(file_path)
-        print("Предсказание завершено.")
+        voxelgrid_with_predictions = inferencer.predict_for_tree(pc, voxel_size=self._datasets_config['voxel_size'])
         return voxelgrid_with_predictions
 
     def eval(self) -> 'MLPipeline':

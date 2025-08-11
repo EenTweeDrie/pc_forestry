@@ -98,6 +98,7 @@ class TREE(PCD):
         self.coordinate = coordinate
         self.trunk_slice: PCD = None
         self.custom_coordinate = None
+        self.trunk: PCD = None
 
     @classmethod
     def init_from_pcd(cls, pc: PCD) -> None:
@@ -120,11 +121,31 @@ class TREE(PCD):
         return instance
 
     def shift_to_coordinate(self) -> None:
-        """ shift points to coordinate """
+        """
+        Сдвигает облако точек к началу координат.
+        Общий вектор сдвига от исходного состояния сохраняется в `self.shift`.
+        """
         if self.coordinate is None:
             self.estimate_coordinate()
-        self.points = self.points - self.coordinate
+        shift_this_call = self.coordinate.copy()
+        if hasattr(self, 'shift'):
+            self.shift += shift_this_call
+        else:
+            self.shift = shift_this_call
+        self.points = self.points - shift_this_call
         self.coordinate = np.array([0, 0, 0])
+
+    def find_trunk_ml(self) -> None:
+        from ..ml.ml_pipeline import MLPipeline
+        mlp = (
+            MLPipeline(os.path.join(r'D:\lidar\data\classification\v2', 'run_2'))
+            .set_model_type('catboost')
+            .set_datasets_config({'voxel_size': 0.3})
+            .set_model(r'D:\lidar\data\classification\v2\run_1\models\catboost_model.pkl')
+        )
+        vg = mlp.fit(self)
+        trunk_voxels = [voxel for voxel in vg.voxels if voxel.label == 0]
+        self.trunk = vg.get_pcd_by_voxels(trunk_voxels)
 
     def find_trunk_cluster(self, height_threshold: float = 3.0, intensity_cut: float = 5000) -> None:
         """ find the trunk cluster """
@@ -433,3 +454,98 @@ class TREE(PCD):
             o3d.visualization.draw_geometries(pcd_to_show)
         else:
             return ValueError("No trunk slice found")
+
+    def estimate_multi_trunk_diameters(self, cut_height: float = 1.2, slice_height: float = 0.1, min_cluster_size: int = 50, min_points_per_trunk: int = 100):
+        """
+        Оценивает диаметры для многоствольных деревьев и сохраняет в pandas.DataFrame.
+
+        1. Обрезает ствол на высоте `cut_height`.
+        2. Кластеризует верхнюю часть для определения отдельных стволов.
+        3. Для каждого ствола берет срез `slice_height` и оценивает его диаметр.
+
+        Args:
+            cut_height (float): Высота для обрезки ствола от его основания.
+            slice_height (float): Толщина среза для измерения диаметра.
+            min_cluster_size (int): Минимальное количество точек для формирования кластера (ствола).
+            min_points_per_trunk (int): Минимальное количество точек в кластере, чтобы считать его стволом.
+
+        Returns:
+            pd.DataFrame or None: DataFrame с данными о каждом стволе (координаты центра, диаметр)
+                                 или None, если стволы не найдены.
+        """
+        if self.trunk is None:
+            logger.warning("self.trunk is None. Запускаю find_trunk_ml() для поиска ствола.")
+            self.find_trunk_ml()
+            if self.trunk is None:
+                logger.error("find_trunk_ml() не смог найти ствол. Операция прервана.")
+                return None
+
+        trunk_points = self.trunk.points
+        z_min = np.min(trunk_points[:, 2])
+
+        cut_z = z_min + cut_height
+        upper_trunk_points_mask = trunk_points[:, 2] >= cut_z
+        upper_trunk_points = trunk_points[upper_trunk_points_mask]
+
+        if upper_trunk_points.shape[0] < min_cluster_size:
+            logger.warning(f"Недостаточно точек ({upper_trunk_points.shape[0]}) выше {cut_height}м для кластеризации.")
+            self.multi_trunk_diameters_df = None
+            return None
+
+        # Кластеризация верхней части ствола по XY координатам для разделения на отдельные стволы
+        xy_points = upper_trunk_points[:, :2]
+        clusterer = hdbscan.HDBSCAN(min_cluster_size=min_cluster_size,
+                                    core_dist_n_jobs=-1)
+        labels = clusterer.fit_predict(xy_points)
+
+        unique_labels = set(labels)
+        if -1 in unique_labels:
+            unique_labels.remove(-1)  # Удаляем шум
+
+        if not unique_labels:
+            logger.warning("HDBSCAN не нашел ни одного кластера (ствола).")
+            self.multi_trunk_diameters_df = None
+            return None
+
+        logger.info(f"Найдено {len(unique_labels)} потенциальных стволов.")
+
+        trunks_data = []
+        for label in sorted(list(unique_labels)):
+            cluster_mask = (labels == label)
+            cluster_points = upper_trunk_points[cluster_mask]
+
+            if cluster_points.shape[0] < min_points_per_trunk:
+                logger.debug(
+                    f"Ствол {label}: пропущен, т.к. содержит слишком мало точек ({cluster_points.shape[0]}), требуется минимум {min_points_per_trunk}.")
+                continue
+
+            # Берем тонкий срез у основания каждого кластера для измерения диаметра
+            slice_mask = (cluster_points[:, 2] >= cut_z) & (cluster_points[:, 2] < cut_z + slice_height)
+            slice_points = cluster_points[slice_mask]
+
+            if slice_points.shape[0] < 4:  # Нужно хотя бы 4 точки для аппроксимации окружности
+                logger.warning(f"Ствол {label}: Недостаточно точек в срезе ({slice_points.shape[0]}) для оценки диаметра. Пропускаем.")
+                continue
+
+            try:
+                # Оценка диаметра с помощью аппроксимации окружности методом наименьших квадратов
+                xc, yc, r, _ = cf.standardLSQ(slice_points[:, :2])
+                diameter_cm = float(f"{r * 2 * 100:.2f}")
+
+                trunks_data.append({
+                    'xc': xc,
+                    'yc': yc,
+                    'z': cut_z,
+                    'diameter_cm': diameter_cm,
+                    'trunk_label': label
+                })
+                logger.debug(f"Ствол {label}: диаметр = {diameter_cm:.2f} см, центр = ({xc:.2f}, {yc:.2f}, {cut_z:.2f})")
+            except Exception as e:
+                logger.error(f"Ствол {label}: Не удалось аппроксимировать окружность: {e}. Пропускаем.")
+
+        if trunks_data:
+            self.multi_trunk_diameters_df = pd.DataFrame(trunks_data)
+        else:
+            self.multi_trunk_diameters_df = None
+
+        return self.multi_trunk_diameters_df

@@ -3,10 +3,10 @@
 Этот модуль содержит класс для выполнения инференса (предсказаний)
 с использованием обученных моделей машинного обучения.
 """
-
+from __future__ import annotations
 import os
 from typing import Any
-
+from tqdm import tqdm
 import numpy as np
 
 try:
@@ -38,7 +38,7 @@ class MLInferencer:
             raise ValueError("Модель не может быть None.")
         self._model = model
 
-    def predict_for_tree(self, file_path: str, voxel_size: float = 0.5) -> 'VOXELGRID':
+    def predict_for_tree(self, pc: TREE, voxel_size: float) -> VOXELGRID:
         """
         Выполняет инференс для одного дерева из файла.
 
@@ -57,9 +57,6 @@ class MLInferencer:
                 "Модули TREE/VOXELGRID недоступны. Проверьте PYTHONPATH."
             )
 
-        assert os.path.exists(file_path), f"Файл не найден: {file_path}"
-
-        pc = TREE.read(file_path)
         pc.shift_to_coordinate()
         pc.compute_feature('normals')
         if pc.illuminance is None or np.all(pc.illuminance == 0):
@@ -76,7 +73,7 @@ class MLInferencer:
 
         voxels_total: list = []
 
-        for layer in range(min_layer, max_layer + 1):
+        for layer in tqdm(range(min_layer, max_layer + 1), desc="Инференс по слоям"):
             vg.calculate_distances_to_previous_layer_by_layer(pc.coordinate, layer=layer)
             vg.calculate_distances_to_previous_layer_by_layer_XY(pc.coordinate, layer=layer)
             voxels_layer = vg.get_voxels_by_layer(layer=layer)

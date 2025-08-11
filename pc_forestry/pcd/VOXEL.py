@@ -5,6 +5,7 @@ from tqdm import tqdm
 import open3d as o3d
 import pandas as pd
 import copy
+from .TREE import TREE
 
 from loguru import logger
 
@@ -369,6 +370,12 @@ class VOXELGRID:
         for voxel in voxels:
             pcd.append(voxel)
         return pcd
+
+    def get_tree_by_voxels(self, voxels: list) -> TREE:
+        tree = TREE()
+        for voxel in voxels:
+            tree.append(voxel)
+        return tree
 
     def calculate_distances_to_coordinate_by_layer(self, coordinate, layer: int) -> dict:
         """Считает расстояния до координаты дерева для всех вокселей указанного слоя"""
