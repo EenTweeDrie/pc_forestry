@@ -2,6 +2,10 @@ import numpy as np
 import pandas as pd
 from typing import Dict, List
 from sklearn.metrics import roc_auc_score, log_loss, accuracy_score, precision_score, recall_score, f1_score, matthews_corrcoef
+try:
+    from pytorch_tabnet.tab_model import TabNetClassifier
+except ImportError:
+    TabNetClassifier = None
 
 
 class MLValidator:
@@ -22,7 +26,12 @@ class MLValidator:
         Returns:
             Dict[str, float]: Словарь с метриками.
         """
-        proba = model.predict_proba(X)[:, 1]
+        if TabNetClassifier and isinstance(model, TabNetClassifier):
+            X_np = X.values.astype(np.float32)
+            proba = model.predict_proba(X_np)[:, 1]
+        else:
+            proba = model.predict_proba(X)[:, 1]
+
         metrics = {
             "auc": roc_auc_score(y, proba),
             "logloss": log_loss(y, proba),

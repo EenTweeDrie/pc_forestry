@@ -10,6 +10,11 @@ from typing import Any
 import numpy as np
 
 try:
+    from pytorch_tabnet.tab_model import TabNetClassifier
+except ImportError:
+    TabNetClassifier = None
+
+try:
     from ..pcd.TREE import TREE
     from ..pcd.VOXEL import VOXELGRID
 except ImportError:
@@ -56,8 +61,7 @@ class MLInferencer:
 
         pc = TREE.read(file_path)
         pc.shift_to_coordinate()
-        if pc.normals is None or np.all(pc.normals == 0):
-            pc.compute_feature('normals')
+        pc.compute_feature('normals')
         if pc.illuminance is None or np.all(pc.illuminance == 0):
             pc.compute_feature('illuminance')
 
@@ -65,15 +69,16 @@ class MLInferencer:
 
         index = np.array([voxel.index for voxel in vg.voxels])
         max_layer = int(np.max(index[:, 2]))
+        min_layer = int(np.min(index[:, 2]))
 
         for voxel in vg.voxels:
             voxel.label = 2  # unclassified
 
         voxels_total: list = []
 
-        for layer in range(max_layer + 1):
-            vg.calculate_distances_to_previous_layer_by_layer(
-                pc.coordinate, layer=layer)
+        for layer in range(min_layer, max_layer + 1):
+            vg.calculate_distances_to_previous_layer_by_layer(pc.coordinate, layer=layer)
+            vg.calculate_distances_to_previous_layer_by_layer_XY(pc.coordinate, layer=layer)
             voxels_layer = vg.get_voxels_by_layer(layer=layer)
             if not voxels_layer:
                 continue
@@ -84,13 +89,20 @@ class MLInferencer:
             vg_total = VOXELGRID(PC=None, voxel_size=vg.voxel_size,
                                  voxels=list(voxels_total))
             vg_total.calculate_distances_to_coordinate(pc.coordinate)
+            vg_total.calculate_distances_to_coordinate_XY(pc.coordinate)
 
             # Подготовка признаков для всех обработанных вокселей
             df_features = vg_total.normalized_df.drop(
                 columns=["label"], errors="ignore")
 
             # Предсказание вероятностей
-            proba = self._model.predict_proba(df_features)[:, 1]
+            # TabNet требует numpy-массив, в то время как другие модели могут работать с DataFrame
+            if TabNetClassifier and isinstance(self._model, TabNetClassifier):
+                features_np = df_features.fillna(0).values.astype(np.float32)
+                proba = self._model.predict_proba(features_np)
+                proba = proba[:, 0]
+            else:
+                proba = self._model.predict_proba(df_features)[:, 1]
 
             # Присваиваем метку и вероятность только вокселям текущего слоя
             # Используем предсказания для последних добавленных вокселей

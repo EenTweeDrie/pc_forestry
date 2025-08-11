@@ -7,6 +7,11 @@ from typing import Optional, Any, Tuple
 import logging
 import numpy as np
 
+try:
+    from pytorch_tabnet.tab_model import TabNetClassifier
+except ImportError:
+    TabNetClassifier = None
+
 from .ml_trainer import MLTrainer, load_dataset, MODEL_TRAINERS
 from .ml_validator import MLValidator
 from .ml_inferencer import MLInferencer
@@ -63,7 +68,12 @@ class MLPipeline:
         """
         assert os.path.exists(model_path), f"Файл модели не найден: {model_path}"
 
-        self._model = joblib.load(model_path)
+        if model_path.endswith(".zip") and TabNetClassifier:
+            self._model = TabNetClassifier()
+            self._model.load_model(model_path)
+        else:
+            self._model = joblib.load(model_path)
+
         print(f"Модель успешно загружена из: {model_path}")
 
         # Попытка определить тип модели из имени файла для согласованности
@@ -122,10 +132,18 @@ class MLPipeline:
         )
 
         # 2. Загрузка модели
-        model_path = os.path.join(
-            checkpoints_dir, f"{self._model_type}_model.pkl")
-        self._model = joblib.load(model_path)
-        print(f"Модель '{self._model_type}' обучена и загружена.")
+        model_zip_path = os.path.join(checkpoints_dir, f"{self._model_type}_model.zip")
+        model_pkl_path = os.path.join(checkpoints_dir, f"{self._model_type}_model.pkl")
+
+        if os.path.exists(model_zip_path) and TabNetClassifier and self._model_type == 'tabnet':
+            self._model = TabNetClassifier()
+            self._model.load_model(model_zip_path)
+            print(f"Модель '{self._model_type}' обучена и загружена.")
+        elif os.path.exists(model_pkl_path):
+            self._model = joblib.load(model_pkl_path)
+            print(f"Модель '{self._model_type}' обучена и загружена.")
+        else:
+            raise FileNotFoundError(f"Не найден файл модели для {self._model_type} в {checkpoints_dir}")
 
         # 3. Оценка на валидационном наборе (если он существует)
         if val_csv_exists:

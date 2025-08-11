@@ -11,6 +11,11 @@ from sklearn.neural_network import MLPClassifier
 from catboost import CatBoostClassifier
 from sklearn.ensemble import RandomForestClassifier
 
+try:
+    from pytorch_tabnet.tab_model import TabNetClassifier
+except ImportError:
+    TabNetClassifier = None
+
 from .ml_validator import MLValidator
 
 # Константа для количества ядер CPU
@@ -29,50 +34,61 @@ def train_catboost(X_train: pd.DataFrame, y_train: pd.Series,
         devices="0",      # Используем первую GPU
     )
 
-    if use_gridsearch:
-        param_grid = {
-            "depth": [4, 6, 8],
-            "learning_rate": [0.01, 0.05, 0.1],
-            "l2_leaf_reg": [1, 3, 5],
-            "iterations": [300, 500],
-        }
+    from catboost import Pool, cv
 
-        cv = 3 if X_val is None else [(list(range(len(X_train))), list(range(len(X_train), len(X_train) + len(X_val))))]
+    # Задаем параметры для модели. Большое количество итераций компенсируется ранней остановкой.
+    params = {
+        'iterations': 2000,
+        'learning_rate': 0.1,
+        'depth': 6,
+        'l2_leaf_reg': 3,
+        'early_stopping_rounds': 50,
+    }
+    base_model.set_params(**params)
 
-        if X_val is not None:
-            # Объединяем train и val для GridSearchCV
-            X_combined = pd.concat([X_train, X_val], ignore_index=True)
-            y_combined = pd.concat([y_train, y_val], ignore_index=True)
-        else:
-            X_combined = X_train
-            y_combined = y_train
-
-        grid = GridSearchCV(
-            estimator=base_model,
-            param_grid=param_grid,
-            scoring="roc_auc",
-            cv=cv,
-            n_jobs=CPU_CORES,  # Используем 4 ядра для параллельной кросс-валидации
-            verbose=1,
+    if X_val is not None and y_val is not None:
+        # Если есть валидационный набор, используем его для ранней остановки.
+        logger.info("Обучение CatBoost с ранней остановкой на предоставленном валидационном наборе.")
+        base_model.fit(
+            X_train, y_train,
+            eval_set=(X_val, y_val),
+            verbose=100,  # Печатать прогресс каждые 100 итераций
+            use_best_model=True  # Вернуть модель с лучшей итерации
         )
-        grid.fit(X_combined, y_combined)
-        best_model: CatBoostClassifier = grid.best_estimator_
-        logger.info(f"Лучшие параметры CatBoost: {grid.best_params_}")
-        return best_model
-    else:
-        # Используем базовые параметры без поиска
-        base_model.set_params(
-            depth=6,
-            learning_rate=0.05,
-            l2_leaf_reg=3,
-            iterations=500
-        )
-        if X_val is not None and y_val is not None:
-            base_model.fit(X_train, y_train, eval_set=(X_val, y_val))
-        else:
-            base_model.fit(X_train, y_train)
-        logger.info("CatBoost обучен с базовыми параметрами")
+        logger.info(f"Модель обучена. Лучшая итерация: {base_model.get_best_iteration()}")
         return base_model
+    else:
+        # Если валидационного набора нет, используем K-fold CV для подбора оптимального числа итераций.
+        logger.info("Валидационный набор не предоставлен. Используем 3-fold CV для определения оптимального количества итераций.")
+
+        cv_params = base_model.get_params()
+        train_pool = Pool(data=X_train, label=y_train)
+
+        # Запускаем кросс-валидацию для поиска лучшего числа итераций
+        cv_results = cv(
+            pool=train_pool,
+            params=cv_params,
+            fold_count=3,
+            shuffle=True,
+            stratified=True,  # Важно для сбалансированности классов в фолдах
+            verbose=False,
+        )
+
+        # Находим оптимальное количество итераций по результатам CV
+        best_iteration_count = cv_results['test-Logloss-mean'].idxmin() + 1
+        logger.info(f"Оптимальное количество итераций по CV: {best_iteration_count}")
+
+        # Переобучаем модель на всех тренировочных данных с найденным числом итераций
+        final_params = base_model.get_params()
+        final_params['iterations'] = best_iteration_count
+        # Ранняя остановка больше не нужна
+        final_params.pop('early_stopping_rounds', None)
+
+        final_model = CatBoostClassifier(**final_params)
+        final_model.fit(X_train, y_train, verbose=False)
+
+        logger.info("Финальная модель CatBoost обучена на всех данных.")
+        return final_model
 
 
 def train_xgboost(X_train: pd.DataFrame, y_train: pd.Series,
@@ -205,12 +221,24 @@ def train_lightgbm(X_train: pd.DataFrame, y_train: pd.Series,
 def train_tabnet(X_train: pd.DataFrame, y_train: pd.Series,
                  X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None):
     """Обучение TabNet - нейронная сеть специально для табличных данных."""
-    from pytorch_tabnet.tab_model import TabNetClassifier
     import torch
+    import gc
+
+    # Принудительно запускаем сборщик мусора и очищаем кэш CUDA.
+    # Это решает проблему с состоянием CUDA при повторных вызовах в одной сессии.
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     # TabNet работает с numpy массивами
+    # Удаляем столбец 'source_file', если он есть, до преобразования в numpy
+    if "source_file" in X_train.columns:
+        X_train = X_train.drop(columns=["source_file"])
+    if X_val is not None and "source_file" in X_val.columns:
+        X_val = X_val.drop(columns=["source_file"])
+
     X_train_np = X_train.values.astype(np.float32)
-    y_train_np = y_train.values
+    y_train_np = y_train.values.astype(int)
 
     model = TabNetClassifier(
         n_d=64,  # Размерность представления
@@ -231,7 +259,7 @@ def train_tabnet(X_train: pd.DataFrame, y_train: pd.Series,
 
     if X_val is not None and y_val is not None:
         X_val_np = X_val.values.astype(np.float32)
-        y_val_np = y_val.values
+        y_val_np = y_val.values.astype(int)
         eval_set = [(X_val_np, y_val_np)]
         eval_name = ["val"]
     else:
@@ -242,11 +270,11 @@ def train_tabnet(X_train: pd.DataFrame, y_train: pd.Series,
         X_train_np, y_train_np,
         eval_set=eval_set,
         eval_name=eval_name,
-        eval_metric=["auc"] if eval_set else None,
+        eval_metric=["logloss", "auc"] if eval_set else None,
         max_epochs=200,
         patience=20,
-        batch_size=1024,
-        virtual_batch_size=128,
+        batch_size=2048,
+        virtual_batch_size=256,
         drop_last=False,
     )
 
@@ -594,6 +622,7 @@ MODEL_TRAINERS = {
     "rf": train_random_forest,
     "extra_trees": train_extra_trees,
     "svm": train_svm,
+    "tabnet": train_tabnet,
     "voting_ensemble": train_voting_ensemble,
     "extended_ensemble": train_extended_ensemble,
     "stacking_ensemble": train_stacking_ensemble,
@@ -656,8 +685,16 @@ class MLTrainer:
 
             model = trainer_func(X_train, y_train, X_val, y_val)
 
-            model_path = os.path.join(self.output_dir, f"{model_name}_model.pkl")
-            joblib.dump(model, model_path)
+            # TabNet требует специального сохранения
+            if TabNetClassifier and isinstance(model, TabNetClassifier):
+                # pytorch-tabnet автоматически добавляет .zip, поэтому мы его убираем из пути
+                base_model_path = os.path.join(self.output_dir, f"{model_name}_model")
+                model.save_model(base_model_path)
+                model_path = f"{base_model_path}.zip"
+            else:
+                model_path = os.path.join(self.output_dir, f"{model_name}_model.pkl")
+                joblib.dump(model, model_path)
+
             logger.info(f"Модель сохранена в {model_path}")
 
         return self
