@@ -45,6 +45,7 @@ class DatasetBuilder:
                 pc.save(os.path.join(prepared_files_dir, os.path.basename(file_path)))
 
     def _process_tree_file(self, file_path: str, voxel_size: float) -> pd.DataFrame:
+        type_df = self._datasets_config.get('type_df', 'normalized')
         with Timer(f"Обработка файла {os.path.basename(file_path)}"):
             pc = TREE.read(file_path)
             pc.shift_to_coordinate()
@@ -54,7 +55,10 @@ class DatasetBuilder:
             vg.calculate_distances_to_coordinate(pc.coordinate)
             vg.calculate_distances_to_previous_layer_XY(pc.coordinate)
             vg.calculate_distances_to_coordinate_XY(pc.coordinate)
-            df = vg.normalized_df
+            if type_df == 'normalized':
+                df = vg.normalized_df
+            else:
+                df = vg.df
             return df
 
     @Timer("Объединение всех DataFrame'ов")

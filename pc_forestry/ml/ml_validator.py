@@ -13,7 +13,7 @@ class MLValidator:
     Класс для оценки (валидации) моделей машинного обучения.
     """
 
-    def evaluate(self, model, X: pd.DataFrame, y: pd.Series, group_ids: pd.Series = None) -> Dict[str, float]:
+    def evaluate(self, model, X: pd.DataFrame, y: pd.Series, group_ids: pd.Series = None, proba_threshold: float = 0.5) -> Dict[str, float]:
         """
         Вычисляет AUC, лог-лосс и qAUC (если переданы группы).
 
@@ -35,18 +35,18 @@ class MLValidator:
         metrics = {
             "auc": roc_auc_score(y, proba),
             "logloss": log_loss(y, proba),
-            "accuracy": accuracy_score(y, (proba > 0.5).astype(int)),
-            "precision": precision_score(y, (proba > 0.5).astype(int)),
-            "recall": recall_score(y, (proba > 0.5).astype(int)),
-            "f1": f1_score(y, (proba > 0.5).astype(int)),
-            "mcc": matthews_corrcoef(y, (proba > 0.5).astype(int)),
+            "accuracy": accuracy_score(y, (proba > proba_threshold).astype(int)),
+            "precision": precision_score(y, (proba > proba_threshold).astype(int)),
+            "recall": recall_score(y, (proba > proba_threshold).astype(int)),
+            "f1": f1_score(y, (proba > proba_threshold).astype(int)),
+            "mcc": matthews_corrcoef(y, (proba > proba_threshold).astype(int)),
         }
         if group_ids is not None:
             metrics["qauc"] = self._qauc_by_group(
                 y.values, proba, group_ids.values)
         return metrics
 
-    def calculate_metrics(self, y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
+    def calculate_metrics(self, y_true: np.ndarray, y_pred: np.ndarray, groups: np.ndarray) -> Dict[str, float]:
         """
         Вычисляет метрики на основе истинных и предсказанных меток.
 
@@ -58,11 +58,14 @@ class MLValidator:
             Dict[str, float]: Словарь с метриками.
         """
         metrics = {
+            "auc": roc_auc_score(y_true, y_pred),
+            "logloss": log_loss(y_true, y_pred),
             "accuracy": accuracy_score(y_true, y_pred),
             "precision": precision_score(y_true, y_pred, average='weighted', zero_division=0),
             "recall": recall_score(y_true, y_pred, average='weighted', zero_division=0),
             "f1": f1_score(y_true, y_pred, average='weighted', zero_division=0),
             "mcc": matthews_corrcoef(y_true, y_pred),
+            "qauc": self._qauc_by_group(y_true, y_pred, groups)
         }
         return metrics
 

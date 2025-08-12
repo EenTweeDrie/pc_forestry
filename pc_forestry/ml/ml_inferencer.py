@@ -38,7 +38,7 @@ class MLInferencer:
             raise ValueError("Модель не может быть None.")
         self._model = model
 
-    def predict_for_tree(self, pc: TREE, voxel_size: float) -> VOXELGRID:
+    def predict_for_tree(self, pc: TREE, voxel_size: float, fast_mode: bool = False, type_df: str = 'normalized', proba_threshold: float = 0.5) -> VOXELGRID:
         """
         Выполняет инференс для одного дерева из файла.
 
@@ -73,38 +73,92 @@ class MLInferencer:
 
         voxels_total: list = []
 
-        for layer in tqdm(range(min_layer, max_layer + 1), desc="Инференс по слоям"):
-            vg.calculate_distances_to_previous_layer_by_layer(pc.coordinate, layer=layer)
-            vg.calculate_distances_to_previous_layer_by_layer_XY(pc.coordinate, layer=layer)
-            voxels_layer = vg.get_voxels_by_layer(layer=layer)
-            if not voxels_layer:
-                continue
+        if not fast_mode:
+            for layer in tqdm(range(min_layer, max_layer + 1), desc="Инференс по слоям"):
+                vg.calculate_distances_to_previous_layer_by_layer(pc.coordinate, layer=layer)
+                vg.calculate_distances_to_previous_layer_by_layer_XY(pc.coordinate, layer=layer)
+                voxels_layer = vg.get_voxels_by_layer(layer=layer)
+                if not voxels_layer:
+                    continue
 
-            voxels_total.extend(voxels_layer)
+                voxels_total.extend(voxels_layer)
 
-            # Создаем временную воксельную сетку, включающую все воксели до текущего слоя
-            vg_total = VOXELGRID(PC=None, voxel_size=vg.voxel_size,
-                                 voxels=list(voxels_total))
-            vg_total.calculate_distances_to_coordinate(pc.coordinate)
-            vg_total.calculate_distances_to_coordinate_XY(pc.coordinate)
+                # Создаем временную воксельную сетку, включающую все воксели до текущего слоя
+                vg_total = VOXELGRID(PC=None, voxel_size=vg.voxel_size,
+                                     voxels=list(voxels_total))
+                vg_total.calculate_distances_to_coordinate(pc.coordinate)
+                vg_total.calculate_distances_to_coordinate_XY(pc.coordinate)
 
-            # Подготовка признаков для всех обработанных вокселей
-            df_features = vg_total.normalized_df.drop(
-                columns=["label"], errors="ignore")
+                # Подготовка признаков для вокселей текущего слоя
+                if type_df == 'normalized':
+                    df_features = vg_total.normalized_df.drop(
+                        columns=["label"], errors="ignore"
+                    ).tail(len(voxels_layer))
+                else:
+                    df_features = vg_total.df.drop(
+                        columns=["label"], errors="ignore"
+                    ).tail(len(voxels_layer))
 
-            # Предсказание вероятностей
-            # TabNet требует numpy-массив, в то время как другие модели могут работать с DataFrame
-            if TabNetClassifier and isinstance(self._model, TabNetClassifier):
-                features_np = df_features.fillna(0).values.astype(np.float32)
-                proba = self._model.predict_proba(features_np)
-                proba = proba[:, 0]
-            else:
-                proba = self._model.predict_proba(df_features)[:, 1]
+                # Предсказание вероятностей
+                # TabNet требует numpy-массив, в то время как другие модели могут работать с DataFrame
+                if TabNetClassifier and isinstance(self._model, TabNetClassifier):
+                    features_np = df_features.fillna(0).values.astype(np.float32)
+                    proba = self._model.predict_proba(features_np)
+                    proba = proba[:, 1]
+                else:
+                    proba = self._model.predict_proba(df_features)[:, 1]
 
-            # Присваиваем метку и вероятность только вокселям текущего слоя
-            # Используем предсказания для последних добавленных вокселей
-            for voxel, p in zip(voxels_layer, proba[-len(voxels_layer):]):
-                voxel.label = int(p >= 0.5)  # Порог 0.5
-                voxel.proba = p
+                # Присваиваем метку и вероятность только вокселям текущего слоя
+                # Используем предсказания для последних добавленных вокселей
+                for voxel, p in zip(voxels_layer, proba[-len(voxels_layer):]):
+                    voxel.label = int(p >= proba_threshold)  # Порог 0.5
+                    voxel.proba = p
+        else:
+            # Предварительно вычисляем статические признаки, которые не зависят от меток других вокселей
+            vg.calculate_distances_to_coordinate(pc.coordinate)
+            vg.calculate_distances_to_coordinate_XY(pc.coordinate)
+
+            for layer in tqdm(range(min_layer, max_layer + 1), desc="Инференс по слоям"):
+                # Динамически вычисляем признаки, зависящие от меток предыдущих слоев
+                vg.calculate_distances_to_previous_layer_by_layer(pc.coordinate, layer=layer)
+                vg.calculate_distances_to_previous_layer_by_layer_XY(pc.coordinate, layer=layer)
+
+                voxels_layer = vg.get_voxels_by_layer(layer=layer)
+                if not voxels_layer:
+                    continue
+
+                # Создаем временную воксельную сетку только для текущего слоя,
+                # чтобы получить его признаки в виде DataFrame.
+                # Атрибуты вокселей (расстояния и т.д.) уже вычислены на предыдущих шагах.
+                vg_layer = VOXELGRID(PC=None, voxel_size=vg.voxel_size, voxels=voxels_layer)
+
+                # Подготовка признаков для вокселей текущего слоя.
+                # .normalized_df здесь нормализует признаки только для этого слоя,
+                # что может отличаться от нормализации по всем слоям сразу,
+                # но является более эффективным подходом в рамках итеративного процесса.
+                if type_df == 'normalized':
+                    df_features = vg_layer.normalized_df.drop(
+                        columns=["label"], errors="ignore"
+                    )
+                else:
+                    df_features = vg_layer.df.drop(
+                        columns=["label"], errors="ignore"
+                    )
+
+                # Предсказание вероятностей
+                # TabNet требует numpy-массив, в то время как другие модели могут работать с DataFrame
+                if TabNetClassifier and isinstance(self._model, TabNetClassifier):
+                    features_np = df_features.fillna(0).values.astype(np.float32)
+                    proba = self._model.predict_proba(features_np)
+                    proba = proba[:, 1]
+                else:
+                    proba = self._model.predict_proba(df_features)[:, 1]
+
+                # Присваиваем метку и вероятность вокселям текущего слоя.
+                # Эти изменения отразятся в основном объекте vg, так как voxels_layer
+                # содержит ссылки на воксели из vg.
+                for voxel, p in zip(voxels_layer, proba):
+                    voxel.label = int(p >= proba_threshold)  # Порог 0.5
+                    voxel.proba = p
 
         return vg

@@ -216,7 +216,9 @@ class VOXELGRID:
         }
         if hasattr(self, 'proba'):
             data['proba'] = [voxel.proba for voxel in self.voxels]
-        return pd.DataFrame(data)
+        df = pd.DataFrame(data)
+        df = df.apply(lambda x: x.fillna(0) if x.dtype == "float64" else x)
+        return df
 
     @property
     def normalized_df(self):
@@ -434,7 +436,6 @@ class VOXELGRID:
             while not labeled_voxels:
                 if i < 0:
                     # TODO: fix this
-                    logger.error(f"No labeled voxels found in layer {i}")
                     break
                 previous_layer_voxels = self.get_voxels_by_layer(i)
                 labeled_voxels = [
@@ -473,7 +474,6 @@ class VOXELGRID:
             while not labeled_voxels:
                 if i < 0:
                     # TODO: fix this
-                    logger.error(f"No labeled voxels found in layer {i}")
                     break
                 previous_layer_voxels = self.get_voxels_by_layer(i)
                 labeled_voxels = [

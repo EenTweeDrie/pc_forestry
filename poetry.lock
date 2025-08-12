@@ -2,7 +2,7 @@
 
 [[package]]
 name = "addict"
-version = "2.4.0"
+version = "2.4.0dev0"
 description = "Addict is a dictionary whose items can be set using both attribute and item syntax."
 category = "main"
 optional = false

@@ -6,6 +6,8 @@ from tqdm import tqdm
 from typing import Optional, Any, Tuple
 import logging
 import numpy as np
+import json
+from sklearn.metrics import roc_auc_score
 
 try:
     from pytorch_tabnet.tab_model import TabNetClassifier
@@ -152,7 +154,7 @@ class MLPipeline:
                 X_val = X_val.drop(columns=["source_file"])
 
             metrics = self.validator.evaluate(
-                self._model, X_val, y_val, groups_val)
+                self._model, X_val, y_val, groups_val, proba_threshold=self._datasets_config['proba_threshold'])
             print("\nОценка на валидационном наборе:")
             for metric, value in metrics.items():
                 print(f"  {metric}: {value:.4f}")
@@ -164,7 +166,16 @@ class MLPipeline:
     def fit(self, pc: TREE) -> Any:
         assert self._model is not None, "Модель не обучена. Вызовите train() сначала."
         inferencer = MLInferencer(self._model)
-        voxelgrid_with_predictions = inferencer.predict_for_tree(pc, voxel_size=self._datasets_config['voxel_size'])
+        voxelgrid_with_predictions = (
+            inferencer
+            .predict_for_tree(
+                pc,
+                voxel_size=self._datasets_config['voxel_size'],
+                fast_mode=self._datasets_config['fast_mode'],
+                type_df=self._datasets_config['type_df'],
+                proba_threshold=self._datasets_config['proba_threshold']
+            )
+        )
         return voxelgrid_with_predictions
 
     def eval(self) -> 'MLPipeline':
@@ -179,15 +190,16 @@ class MLPipeline:
 
         all_true_labels = []
         all_pred_labels = []
+        all_query_labels = []
 
         print(f"\nЗапуск E2E оценки на {len(test_files)} тестовых файлах...")
-        for file_path in tqdm(test_files, desc="Оценка тестовых файлов"):
+        for i, file_path in enumerate(tqdm(test_files, desc="Оценка тестовых файлов")):
             # 1. Получаем предсказания
-            predicted_voxelgrid = self.fit(file_path)
+            true_tree = TREE.read(file_path)
+            predicted_voxelgrid = self.fit(true_tree)
             pred_labels = np.array([voxel.label for voxel in predicted_voxelgrid.voxels])
 
             # 2. Загружаем исходные данные с истинными метками
-            true_tree = TREE.read(file_path)
             true_tree.shift_to_coordinate()
             true_voxelgrid = VOXELGRID.create(true_tree, voxel_size=predicted_voxelgrid.voxel_size)
             true_labels = np.array([voxel.label for voxel in true_voxelgrid.voxels])
@@ -201,18 +213,34 @@ class MLPipeline:
                 )
                 continue
 
+            print(roc_auc_score(true_labels, pred_labels))
+
             all_pred_labels.extend(pred_labels)
             all_true_labels.extend(true_labels)
+            all_query_labels.extend([i] * len(true_labels))
 
         if not all_true_labels:
             print("Не удалось обработать ни одного файла для оценки.")
             return self
 
         # 3. Считаем метрики
-        metrics = self.validator.calculate_metrics(np.array(all_true_labels), np.array(all_pred_labels))
+        metrics = self.validator.calculate_metrics(np.array(all_true_labels), np.array(all_pred_labels), np.array(all_query_labels))
 
         print("\nИтоговая оценка на тестовом наборе (E2E):")
         for metric, value in metrics.items():
             print(f"  {metric}: {value:.4f}")
+
+        # Сохраняем метрики в файл
+        if self._model_type:
+            model_dir = os.path.dirname(self.path_manager.get_model_path(self._model_type))
+            os.makedirs(model_dir, exist_ok=True)
+            metrics_path = os.path.join(model_dir, "e2e_test_metrics.json")
+            # Конвертируем numpy типы в стандартные типы Python для JSON сериализации
+            serializable_metrics = {k: (float(v) if isinstance(v, (np.number, np.bool_)) else v) for k, v in metrics.items()}
+            with open(metrics_path, 'w') as f:
+                json.dump(serializable_metrics, f, indent=4)
+            print(f"\nМетрики сохранены в файл: {metrics_path}")
+        else:
+            logger.warning("Тип модели не определен, метрики не сохранены в файл.")
 
         return self

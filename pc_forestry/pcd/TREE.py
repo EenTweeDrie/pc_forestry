@@ -137,12 +137,19 @@ class TREE(PCD):
 
     def find_trunk_ml(self) -> None:
         from ..ml.ml_pipeline import MLPipeline
+        # mlp = (
+        #     MLPipeline(os.path.join(r'D:\lidar\data\classification\v2', 'run_2'))
+        #     .set_model_type('catboost')
+        #     .set_datasets_config({'voxel_size': 0.3})
+        #     .set_model(r'D:\lidar\data\classification\v2\run_1\models\catboost_model.pkl')
+        # )
         mlp = (
-            MLPipeline(os.path.join(r'D:\lidar\data\classification\v2', 'run_2'))
+            MLPipeline(os.path.join(r'D:\lidar\data\classification\v2', 'run_3'))
             .set_model_type('catboost')
-            .set_datasets_config({'voxel_size': 0.3})
-            .set_model(r'D:\lidar\data\classification\v2\run_1\models\catboost_model.pkl')
+            .set_datasets_config({'voxel_size': 0.3, 'type_df': 'original', 'fast_mode': True, 'proba_threshold': 0.35})
+            .set_model(r'D:\lidar\data\classification\v2\run_3\models\catboost_model.pkl')
         )
+
         vg = mlp.fit(self)
         trunk_voxels = [voxel for voxel in vg.voxels if voxel.label == 0]
         self.trunk = vg.get_pcd_by_voxels(trunk_voxels)
@@ -455,7 +462,7 @@ class TREE(PCD):
         else:
             return ValueError("No trunk slice found")
 
-    def estimate_multi_trunk_diameters(self, cut_height: float = 1.2, slice_height: float = 0.1, min_cluster_size: int = 50, min_points_per_trunk: int = 100):
+    def estimate_multi_trunk_diameters(self, cut_height: float = 1.2, slice_height: float = 0.1, min_cluster_size: int = 50, min_points_per_trunk: int = 50):
         """
         Оценивает диаметры для многоствольных деревьев и сохраняет в pandas.DataFrame.
 
@@ -530,14 +537,29 @@ class TREE(PCD):
             try:
                 # Оценка диаметра с помощью аппроксимации окружности методом наименьших квадратов
                 xc, yc, r, _ = cf.standardLSQ(slice_points[:, :2])
-                diameter_cm = float(f"{r * 2 * 100:.2f}")
+                diameter_m = r * 2
+
+                # Fallback: если аппроксимированный диаметр значительно больше реального разброса точек,
+                # используем разброс как более надежную оценку. Это помогает при плохой аппроксимации.
+                spread_x = np.ptp(slice_points[:, 0])  # Peak-to-peak (max - min)
+                spread_y = np.ptp(slice_points[:, 1])
+                max_spread = max(spread_x, spread_y)
+
+                if diameter_m > 1.05 * max_spread:
+                    logger.debug(
+                        f"Ствол {label}: Диаметр LSQ ({diameter_m*100:.2f} см) > 1.05 * разброса ({max_spread*100:.2f} см). "
+                        f"Используется fallback-диаметр, равный среднему разбросу."
+                    )
+                    # diameter_m = (spread_x+spread_y)/2
+                    diameter_m = max_spread
+
+                diameter_cm = float(f"{diameter_m * 100:.2f}")
 
                 trunks_data.append({
                     'xc': xc,
                     'yc': yc,
                     'z': cut_z,
-                    'diameter_cm': diameter_cm,
-                    'trunk_label': label
+                    'diameter_cm': diameter_cm
                 })
                 logger.debug(f"Ствол {label}: диаметр = {diameter_cm:.2f} см, центр = ({xc:.2f}, {yc:.2f}, {cut_z:.2f})")
             except Exception as e:
