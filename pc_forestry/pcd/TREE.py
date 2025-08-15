@@ -548,7 +548,7 @@ class TREE(PCD):
                 if diameter_m > 1.05 * max_spread:
                     logger.debug(
                         f"Ствол {label}: Диаметр LSQ ({diameter_m*100:.2f} см) > 1.05 * разброса ({max_spread*100:.2f} см). "
-                        f"Используется fallback-диаметр, равный среднему разбросу."
+                        f"Используется fallback-диаметр, равный разбросу."
                     )
                     # diameter_m = (spread_x+spread_y)/2
                     diameter_m = max_spread
