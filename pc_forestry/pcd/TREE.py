@@ -98,6 +98,7 @@ class TREE(PCD):
         self.coordinate = coordinate
         self.trunk_slice: PCD = None
         self.custom_coordinate = None
+        self.trunk: PCD = None
 
     @classmethod
     def init_from_pcd(cls, pc: PCD) -> None:
@@ -113,15 +114,45 @@ class TREE(PCD):
         return instance
 
     @classmethod
-    def read(cls, file_path: str, verbose: bool = False) -> 'PCD':
+    def read(cls, file_path: str) -> 'PCD':
         instance = cls()
-        instance.open(file_path, verbose=verbose)
+        instance.open(file_path)
         instance.name = file_path.split('/')[-1].split('.')[0]
         return instance
 
     def shift_to_coordinate(self) -> None:
-        """ shift points to coordinate """
-        self.points = self.points - self.coordinate
+        """
+        Сдвигает облако точек к началу координат.
+        Общий вектор сдвига от исходного состояния сохраняется в `self.shift`.
+        """
+        if self.coordinate is None:
+            self.estimate_coordinate()
+        shift_this_call = self.coordinate.copy()
+        if hasattr(self, 'shift'):
+            self.shift += shift_this_call
+        else:
+            self.shift = shift_this_call
+        self.points = self.points - shift_this_call
+        self.coordinate = np.array([0, 0, 0])
+
+    def find_trunk_ml(self) -> None:
+        from ..ml.ml_pipeline import MLPipeline
+        # mlp = (
+        #     MLPipeline(os.path.join(r'D:\lidar\data\classification\v2', 'run_2'))
+        #     .set_model_type('catboost')
+        #     .set_datasets_config({'voxel_size': 0.3})
+        #     .set_model(r'D:\lidar\data\classification\v2\run_1\models\catboost_model.pkl')
+        # )
+        mlp = (
+            MLPipeline(os.path.join(r'D:\lidar\data\classification\v2', 'run_3'))
+            .set_model_type('catboost')
+            .set_datasets_config({'voxel_size': 0.3, 'type_df': 'original', 'fast_mode': True, 'proba_threshold': 0.35})
+            .set_model(r'D:\lidar\data\classification\v2\run_3\models\catboost_model.pkl')
+        )
+
+        vg = mlp.fit(self)
+        trunk_voxels = [voxel for voxel in vg.voxels if voxel.label == 0]
+        self.trunk = vg.get_pcd_by_voxels(trunk_voxels)
 
     def find_trunk_cluster(self, height_threshold: float = 3.0, intensity_cut: float = 5000) -> None:
         """ find the trunk cluster """
@@ -164,7 +195,7 @@ class TREE(PCD):
                 if i == -1:
                     continue
                 cluster = lower_points[cluster_labels == i]
-                if cluster.shape[0] > 100:
+                if cluster.shape[0] >= 512:
                     probabilities.append(predict_cluster(cluster, device))
                     clusters_indices.append(i)
                     # debug
@@ -175,15 +206,14 @@ class TREE(PCD):
                 {'probability': probabilities, 'cluster_index': clusters_indices, 'points': cluser_points})
             pdf = pdf.sort_values(by='probability', ascending=False)
             pdf = pdf.reset_index(drop=True)
-            logger.debug(pdf)
+            # logger.debug(pdf)
 
             # Step 5: Get the best cluster
             best_index = None
             for i in range(len(pdf)):
                 choosen_index = pdf.iloc[i]['cluster_index']
                 if (pdf.iloc[i]['probability'] > 0):
-                    choosen_cluster = lower_points[cluster_labels ==
-                                                   choosen_index]
+                    choosen_cluster = lower_points[cluster_labels == choosen_index]
                     if max(choosen_cluster[:, 2]) - min(choosen_cluster[:, 2]) > height_threshold/2:
                         if min(choosen_cluster[:, 2]) - min(lower_points[:, 2]) < 0.25:
                             best_index = choosen_index
@@ -371,11 +401,11 @@ class TREE(PCD):
         distance = np.sqrt((xc_circle - xc_mass) ** 2 +
                            (yc_circle - yc_mass) ** 2)
         if distance > error_threshold:
-            # logger.info(f'Choose the center of mass')
+            logger.debug(f'Choose the center of mass')
             coordinate = [xc_mass, yc_mass,
                           (high_height-low_height)/2+low_height+z_min]
         else:
-            # logger.info(f'Choose the center of the circle')
+            logger.debug(f'Choose the center of the circle')
             coordinate = [xc_circle, yc_circle,
                           (high_height-low_height)/2+low_height+z_min]
 
@@ -409,7 +439,10 @@ class TREE(PCD):
         pcd_to_show = []
 
         if self.custom_coordinate is None:
-            self.estimate_coordinate(low_height=1, high_height=1.6)
+            self.estimate_coordinate(low_height=1.3, high_height=1.4)
+
+        if self.coordinate is None:
+            self.estimate_coordinate()
 
         if self.diameter_LS is None:
             self.estimate_diameter()
@@ -424,13 +457,13 @@ class TREE(PCD):
             if self.diameter_LS and self.coordinate:
                 # Display the diameter as a circle at a height of 1.3 meters
                 circle_center = self.custom_coordinate
+                print(self.custom_coordinate, self.custom_coordinate[2])
                 circle_radius = self.diameter_LS / 2 / 100  # convert to meters
                 circle_points = []
                 for angle in np.linspace(0, 2 * np.pi, 100):
                     x = circle_center[0] + circle_radius * np.cos(angle)
                     y = circle_center[1] + circle_radius * np.sin(angle)
-                    circle_points.append([x, y, circle_center[2]])
-                circle_points = np.array(circle_points)
+                    circle_points.append([x-0.15, y-0.15, 1.3])
                 # Create a point cloud for the circle
                 circle_pcd = o3d.geometry.PointCloud()
                 circle_pcd.points = o3d.utility.Vector3dVector(circle_points)
@@ -450,3 +483,113 @@ class TREE(PCD):
             o3d.visualization.draw_geometries(pcd_to_show)
         else:
             return ValueError("No trunk slice found")
+
+    def estimate_multi_trunk_diameters(self, cut_height: float = 1.2, slice_height: float = 0.1, min_cluster_size: int = 50, min_points_per_trunk: int = 50):
+        """
+        Оценивает диаметры для многоствольных деревьев и сохраняет в pandas.DataFrame.
+
+        1. Обрезает ствол на высоте `cut_height`.
+        2. Кластеризует верхнюю часть для определения отдельных стволов.
+        3. Для каждого ствола берет срез `slice_height` и оценивает его диаметр.
+
+        Args:
+            cut_height (float): Высота для обрезки ствола от его основания.
+            slice_height (float): Толщина среза для измерения диаметра.
+            min_cluster_size (int): Минимальное количество точек для формирования кластера (ствола).
+            min_points_per_trunk (int): Минимальное количество точек в кластере, чтобы считать его стволом.
+
+        Returns:
+            pd.DataFrame or None: DataFrame с данными о каждом стволе (координаты центра, диаметр)
+                                 или None, если стволы не найдены.
+        """
+        if self.trunk is None:
+            logger.warning("self.trunk is None. Запускаю find_trunk_ml() для поиска ствола.")
+            self.find_trunk_ml()
+            if self.trunk is None:
+                logger.error("find_trunk_ml() не смог найти ствол. Операция прервана.")
+                return None
+
+        trunk_points = self.trunk.points
+        z_min = np.min(trunk_points[:, 2])
+
+        cut_z = z_min + cut_height
+        upper_trunk_points_mask = trunk_points[:, 2] >= cut_z
+        upper_trunk_points = trunk_points[upper_trunk_points_mask]
+
+        if upper_trunk_points.shape[0] < min_cluster_size:
+            logger.warning(f"Недостаточно точек ({upper_trunk_points.shape[0]}) выше {cut_height}м для кластеризации.")
+            self.multi_trunk_diameters_df = None
+            return None
+
+        # Кластеризация верхней части ствола по XY координатам для разделения на отдельные стволы
+        xy_points = upper_trunk_points[:, :2]
+        clusterer = hdbscan.HDBSCAN(min_cluster_size=min_cluster_size,
+                                    core_dist_n_jobs=-1)
+        labels = clusterer.fit_predict(xy_points)
+
+        unique_labels = set(labels)
+        if -1 in unique_labels:
+            unique_labels.remove(-1)  # Удаляем шум
+
+        if not unique_labels:
+            logger.warning("HDBSCAN не нашел ни одного кластера (ствола).")
+            self.multi_trunk_diameters_df = None
+            return None
+
+        logger.info(f"Найдено {len(unique_labels)} потенциальных стволов.")
+
+        trunks_data = []
+        for label in sorted(list(unique_labels)):
+            cluster_mask = (labels == label)
+            cluster_points = upper_trunk_points[cluster_mask]
+
+            if cluster_points.shape[0] < min_points_per_trunk:
+                logger.debug(
+                    f"Ствол {label}: пропущен, т.к. содержит слишком мало точек ({cluster_points.shape[0]}), требуется минимум {min_points_per_trunk}.")
+                continue
+
+            # Берем тонкий срез у основания каждого кластера для измерения диаметра
+            slice_mask = (cluster_points[:, 2] >= cut_z) & (cluster_points[:, 2] < cut_z + slice_height)
+            slice_points = cluster_points[slice_mask]
+
+            if slice_points.shape[0] < 4:  # Нужно хотя бы 4 точки для аппроксимации окружности
+                logger.warning(f"Ствол {label}: Недостаточно точек в срезе ({slice_points.shape[0]}) для оценки диаметра. Пропускаем.")
+                continue
+
+            try:
+                # Оценка диаметра с помощью аппроксимации окружности методом наименьших квадратов
+                xc, yc, r, _ = cf.standardLSQ(slice_points[:, :2])
+                diameter_m = r * 2
+
+                # Fallback: если аппроксимированный диаметр значительно больше реального разброса точек,
+                # используем разброс как более надежную оценку. Это помогает при плохой аппроксимации.
+                spread_x = np.ptp(slice_points[:, 0])  # Peak-to-peak (max - min)
+                spread_y = np.ptp(slice_points[:, 1])
+                max_spread = max(spread_x, spread_y)
+
+                if diameter_m > 1.05 * max_spread:
+                    logger.debug(
+                        f"Ствол {label}: Диаметр LSQ ({diameter_m*100:.2f} см) > 1.05 * разброса ({max_spread*100:.2f} см). "
+                        f"Используется fallback-диаметр, равный разбросу."
+                    )
+                    # diameter_m = (spread_x+spread_y)/2
+                    diameter_m = max_spread
+
+                diameter_cm = float(f"{diameter_m * 100:.2f}")
+
+                trunks_data.append({
+                    'xc': xc,
+                    'yc': yc,
+                    'z': cut_z,
+                    'diameter_cm': diameter_cm
+                })
+                logger.debug(f"Ствол {label}: диаметр = {diameter_cm:.2f} см, центр = ({xc:.2f}, {yc:.2f}, {cut_z:.2f})")
+            except Exception as e:
+                logger.error(f"Ствол {label}: Не удалось аппроксимировать окружность: {e}. Пропускаем.")
+
+        if trunks_data:
+            self.multi_trunk_diameters_df = pd.DataFrame(trunks_data)
+        else:
+            self.multi_trunk_diameters_df = None
+
+        return self.multi_trunk_diameters_df

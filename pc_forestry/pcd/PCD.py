@@ -8,676 +8,399 @@ import pyvista
 import h5py
 import pandas as pd
 import copy
+from tqdm import tqdm
+from loguru import logger
+from numba import njit, prange
+from .illuminance.illuminance import _create_voxel_grid_fast, _illuminance_kernel_numba
+from ..utils.timer import Timer
+from .features import (
+    Points, Intensity, RGB, Normals, OriginalCloudIndex, GPSTime, Illuminance,
+    Feature, ScalarFeature, VectorFeature
+)
 
 
 class PCD:
-    def __init__(self,
-                 points=np.empty((0, 3)),
-                 intensity=np.empty(0),
-                 rgb=np.empty((0, 3)),
-                 original_cloud_index=np.empty(0),
-                 gps_time=np.empty(0),
-                 illuminance=np.empty(0),
-                 normals=np.empty((0, 3))):
-        self._points = points
-        self.intensity = intensity
-        self._rgb = rgb
-        self.original_cloud_index = original_cloud_index
-        self.gps_time = gps_time
-        self.illuminance = illuminance
-        self._normals = normals
+    def __init__(self, features=None, **kwargs):
+        if features is None:
+            self._features = {
+                'points': Points(),
+                'intensity': Intensity(),
+                'rgb': RGB(),
+                'normals': Normals(),
+                'original_cloud_index': OriginalCloudIndex(),
+                'gps_time': GPSTime(),
+                'illuminance': Illuminance(),
+            }
+        else:
+            self._features = features
+
+        # Populate data from kwargs
+        for name, data in kwargs.items():
+            if name in self._features:
+                self._features[name].data = data
+
+        self._create_properties()
+
+    def _create_properties(self):
+        """Dynamically create properties for each feature."""
+        for name, feature in self._features.items():
+            # Create main property for the feature data
+            setattr(PCD, name, property(
+                fget=lambda self, n=name: self._features[n].data,
+                fset=lambda self, value, n=name: setattr(self._features[n], 'data', value)
+            ))
+
+            # Create properties for vector components (e.g., x, y, z for points)
+            if isinstance(feature, VectorFeature):
+                for i, col_name in enumerate(feature.df_column_names):
+                    # Use a new variable in the lambda's scope
+                    prop_name = col_name.lower()
+                    if not hasattr(PCD, prop_name):
+                        setattr(PCD, prop_name, property(
+                            fget=lambda self, n=name, idx=i: self._features[n].data[:, idx],
+                            fset=lambda self, value, n=name, idx=i: self._features[n].data.__setitem__(
+                                (slice(None), idx), value)
+                        ))
 
     @property
     def df(self) -> pd.DataFrame:
         """ merge all fields in DataFrame """
-        data = {
-            'x': self.x,
-            'y': self.y,
-            'z': self.z,
-            'intensity': self.intensity,
-            'r': self.r,
-            'g': self.g,
-            'b': self.b,
-            'original_cloud_index': self.original_cloud_index,
-            'gps_time': self.gps_time,
-            'illuminance': self.illuminance
-        }
-        return pd.DataFrame(data)
+        df_data = {}
+        for feature in self._features.values():
+            if feature.size > 0:
+                if isinstance(feature, VectorFeature):
+                    if hasattr(feature.data, 'ndim') and feature.data.ndim > 1:
+                        for i, col_name in enumerate(feature.df_column_names):
+                            df_data[col_name] = feature.data[:, i]
+                else:
+                    df_data[feature.name] = feature.data
+        return pd.DataFrame(df_data)
 
-    def save(self, file_path: str, verbose: bool = False) -> None:
-        def save_pcd(self, file_path, verbose=False):
-            """ save .pcd """
-            if verbose:
-                print(f"Saving file {file_path} ...")
-                start = time()
-            dt = np.zeros((len(self.points), 8), dtype=np.float32)
-            dt[:, :3] = self.points
-            if self.rgb.size > 0:
-                rgb = np.uint8(self.rgb)
-                dt[:, 3] = pypcd.encode_rgb_for_pcl(rgb)
-            dt[:, 4] = self.gps_time if self.gps_time.size > 0 else None
-            dt[:, 5] = self.original_cloud_index if self.original_cloud_index.size > 0 else None
-            dt[:, 6] = self.intensity if self.intensity.size > 0 else None
-            dt[:, 7] = self.illuminance if self.illuminance.size > 0 else None
-            md = {'version': .7,
-                  'fields': ['x', 'y', 'z', 'rgb', 'GpsTime', 'Original_cloud_index', 'Intensity', 'Illuminance'],
-                  'count': [1, 1, 1, 1, 1, 1, 1, 1],
-                  'width': len(dt),
-                  'height': 1,
-                  'viewpoint': [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
-                  'points': len(dt),
-                  'type': ['F', 'F', 'F', 'F', 'F', 'F', 'F', 'F'],
-                  'size': [4, 4, 4, 4, 4, 4, 4, 4],
-                  'data': 'binary'}
-            pc_data = dt.view(np.dtype([('x', np.float32),
-                                        ('y', np.float32),
-                                        ('z', np.float32),
-                                        ('rgb', np.float32),
-                                        ('GpsTime', np.float32),
-                                        ('Original_cloud_index', np.float32),
-                                        ('Intensity', np.float32),
-                                        ('Illuminance', np.float32)])).squeeze()
+    def save(self, file_path: str) -> None:
+        """Saves the point cloud to a file, dispatching to the correct format handler."""
+        file_format = file_path.split('.')[-1]
+
+        @Timer(f"Сохранение файла {file_path}")
+        def save_pcd(file_path):
+            num_points = len(self.points) if hasattr(self.points, '__len__') else 0
+            pcd_fields = []
+            pcd_data_list = []
+
+            for feature in self._features.values():
+                if feature.size > 0:
+                    pcd_fields.extend(feature.pcd_field_names)
+                    packed_data = feature.pack_pcd_data()
+                    if packed_data.ndim == 1:
+                        packed_data = packed_data.reshape(-1, 1)
+                    pcd_data_list.append(packed_data)
+
+            if not pcd_data_list:
+                return
+
+            dt = np.hstack(pcd_data_list).astype(np.float32)
+
+            md = {'version': .7, 'fields': pcd_fields,
+                  'count': [1] * len(pcd_fields), 'width': num_points, 'height': 1,
+                  'viewpoint': [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0], 'points': num_points,
+                  'type': ['F'] * len(pcd_fields), 'size': [4] * len(pcd_fields), 'data': 'binary'}
+
+            dtype_list = [(name, np.float32) for name in pcd_fields]
+            pc_data = dt.view(np.dtype(dtype_list)).squeeze()
 
             new_cloud = pypcd.PointCloud(md, pc_data)
             new_cloud.save_pcd(file_path, 'binary')
-            if verbose:
-                end = time()-start
-                print(f"Time saving: {end:.3f} s")
 
-        def save_las(self, file_path, verbose=False):
-            """" save .las """
-            if verbose:
-                print(f"Saving file {file_path} ...")
-                start = time()
+        @Timer(f"Сохранение файла {file_path}")
+        def save_las_laz(file_path):
             header = laspy.LasHeader(point_format=3, version="1.4")
-            header.point_count = len(self.points)
-            las = laspy.LasData(header)
-            las.add_extra_dim(laspy.ExtraBytesParams(
-                name="illuminance", type=np.float32))
-            self.points = np.asarray(self.points, dtype=np.float32)
-            las.x = self.points[:, 0]
-            las.y = self.points[:, 1]
-            las.z = self.points[:, 2]
-            if self.rgb.size > 0:
-                rgb = self.rgb.astype(np.uint16)
-                las.red = rgb[:, 0] * 256
-                las.green = rgb[:, 1] * 256
-                las.blue = rgb[:, 2] * 256
-            if self.intensity.size > 0:
-                las.intensity = self.intensity
-            if self.illuminance.size > 0:
-                las.illuminance = self.illuminance
-            if self.gps_time.size > 0:
-                las.gps_time = self.gps_time
-            if self.original_cloud_index.size > 0:
-                las.point_source_id = self.original_cloud_index
-            las.write(file_path)
-            if verbose:
-                end = time()-start
-                print(f"Time saving: {end:.3f} s")
-
-        def save_laz(self, file_path, verbose=False):
-            """" save .laz """
-            if verbose:
-                print(f"Saving file {file_path} ...")
-                start = time()
-            header = laspy.LasHeader(point_format=3, version="1.4")
-            header.point_count = len(self.points)
-            las = laspy.LasData(header)
-            las.add_extra_dim(laspy.ExtraBytesParams(
-                name="illuminance", type=np.float32))
-
-            self.points = np.asarray(self.points, dtype=np.float32)
-            las.x = self.points[:, 0]
-            las.y = self.points[:, 1]
-            las.z = self.points[:, 2]
-            if self.rgb.size > 0:
-                rgb = self.rgb.astype(np.uint16)
-                las.red = rgb[:, 0] * 256
-                las.green = rgb[:, 1] * 256
-                las.blue = rgb[:, 2] * 256
-            if self.intensity.size > 0:
-                las.intensity = self.intensity
-            if self.illuminance.size > 0:
-                las.illuminance = self.illuminance
-            if self.gps_time.size > 0:
-                las.gps_time = self.gps_time
-            if self.original_cloud_index.size > 0:
-                las.point_source_id = self.original_cloud_index
-            las.write(file_path)
-            if verbose:
-                end = time()-start
-                print(f"Time saving: {end:.3f} s")
-
-        def save_csv(self, file_path, verbose=False):
-            """" save .csv """
-            if verbose:
-                print(f"Saving file {file_path} ...")
-                start = time()
-            data = {}
             if self.points.size > 0:
-                points = np.asarray(self.points)
-                data["x"] = points[:, 0]
-                data["y"] = points[:, 1]
-                data["z"] = points[:, 2]
-            if self.intensity.size > 0:
-                data["Intensity"] = self.intensity
-            if self.illuminance.size > 0:
-                data["Illuminance"] = self.illuminance
-            if self.gps_time.size > 0:
-                data["GpsTime"] = self.gps_time
-            if self.original_cloud_index.size > 0:
-                data["Original_cloud_index"] = self.original_cloud_index
-            if self.rgb.size > 0:
-                rgb = np.asarray(self.rgb)
-                data["red"] = rgb[:, 0]
-                data["green"] = rgb[:, 1]
-                data["blue"] = rgb[:, 2]
-            df = pd.DataFrame(data)
-            df.to_csv(file_path, index=False)
-            if verbose:
-                end = time()-start
-                print(f"Time saving: {end:.3f} s")
+                header.point_count = len(self.points)
+            las = laspy.LasData(header)
 
-        def save_txt(self, file_path, verbose=False):
-            """ save .txt """
-            if verbose:
-                print(f"Saving file {file_path} ...")
-                start = time()
-            # Determine the columns to write based on available data
-            columns_to_write = []
-            if self.points.size > 0:
-                columns_to_write.extend(['X', 'Y', 'Z'])
-            if self.intensity.size > 0:
-                columns_to_write.append('Intensity')
-            if self.rgb.size > 0:
-                columns_to_write.extend(['R', 'G', 'B'])
-            if self.original_cloud_index.size > 0:
-                columns_to_write.append('Original_cloud_index')
-            if self.gps_time.size > 0:
-                columns_to_write.append('GpsTime')
-            if self.illuminance.size > 0:
-                columns_to_write.append('Illuminance_(PCV)')
+            # Let each feature add its required dimensions to the header
+            for feature in self._features.values():
+                if feature.size > 0:
+                    feature.add_las_extra_dims(las)
 
-            # Write the file
-            with open(file_path, 'w') as file:
-                # Write the header line
-                header_line = '//' + ' '.join(columns_to_write)
-                file.write(header_line + '\n')
+            # Let each feature pack its data into the las object
+            for feature in self._features.values():
+                if feature.size > 0:
+                    feature.pack_las_data(las)
 
-                # Write the data lines
-                num_points = len(self.points) if self.points.size > 0 else 0
-                for i in range(num_points):
-                    values = []
-                    if self.points.size > 0:
-                        values.extend(self.points[i])
-                    if self.intensity.size > 0:
-                        values.append(self.intensity[i])
-                    if self.rgb.size > 0:
-                        values.extend(self.rgb[i])
-                    if self.original_cloud_index.size > 0:
-                        values.append(self.original_cloud_index[i])
-                    if self.gps_time.size > 0:
-                        values.append(self.gps_time[i])
-                    if self.illuminance.size > 0:
-                        values.append(self.illuminance[i])
-                    line = ' '.join(map(str, values))
-                    file.write(line + '\n')
+            las.write(file_path)
 
-            if verbose:
-                end = time()-start
-                print(f"Time saving: {end:.3f} s")
+        @Timer(f"Сохранение файла {file_path}")
+        def save_csv(file_pathe):
+            self.df.to_csv(file_path, index=False)
 
-        def save_h5(self, file_path, verbose=False):
-            """Save data to an HDF5 file."""
-            if verbose:
-                start = time()
-                print(f"Saving data to {file_path} ...")
+        @Timer(f"Сохранение файла {file_path}")
+        def save_txt(file_path):
+            df = self.df
+            # Dynamically rename columns for txt format
+            rename_map = {}
+            for feature in self._features.values():
+                if feature.size > 0:
+                    rename_map.update(feature.txt_column_map)
+            df = df.rename(columns=rename_map)
 
+            with open(file_path, 'w') as f:
+                f.write('//' + ' '.join(df.columns) + '\n')
+                df.to_csv(f, sep=' ', index=False, header=False, lineterminator='\n')
+
+        @Timer(f"Сохранение файла {file_path}")
+        def save_h5(file_path):
             with h5py.File(file_path, 'w') as h5f:
-                if self.points.size > 0:
-                    h5f.create_dataset('points', data=self.points)
-                if self.intensity.size > 0:
-                    h5f.create_dataset('Intensity', data=self.intensity)
-                if self.rgb.size > 0:
-                    h5f.create_dataset('rgb', data=self.rgb)
-                if self.original_cloud_index.size > 0:
-                    h5f.create_dataset('Original_cloud_index',
-                                       data=self.original_cloud_index)
-                if self.gps_time.size > 0:
-                    h5f.create_dataset('GpsTime', data=self.gps_time)
-                if self.illuminance.size > 0:
-                    h5f.create_dataset('Illuminance',
-                                       data=self.illuminance)
+                for name, feature in self._features.items():
+                    if feature.size > 0:
+                        h5f.create_dataset(name, data=feature.data)
 
-            if verbose:
-                end = time() - start
-                print(f"Time saving data: {end:.3f} s")
+        # Dispatch table
+        savers = {
+            'pcd': save_pcd,
+            'las': save_las_laz,
+            'laz': save_las_laz,
+            'csv': save_csv,
+            'txt': save_txt,
+            'h5': save_h5,
+        }
 
-        if file_path.endswith('.pcd'):
-            save_pcd(self, file_path, verbose=verbose)
-        elif file_path.endswith('.las'):
-            save_las(self, file_path, verbose=verbose)
-        elif file_path.endswith('.laz'):
-            save_laz(self, file_path, verbose=verbose)
-        elif file_path.endswith('.csv'):
-            save_csv(self, file_path, verbose=verbose)
-        elif file_path.endswith('.txt'):
-            save_txt(self, file_path, verbose=verbose)
-        elif file_path.endswith('.h5'):
-            save_h5(self, file_path, verbose=verbose)
+        if file_format in savers:
+            savers[file_format](file_path)
         else:
             print("invalid format")
 
     @classmethod
-    def read(cls, file_path: str, verbose: bool = False) -> 'PCD':
-        instance = cls()
-        instance.open(file_path, verbose=verbose)
+    def read(cls, file_path: str, features=None) -> 'PCD':
+        instance = cls(features)
+        instance.open(file_path,)
         return instance
 
-    def open(self, file_path: str, verbose: bool = False) -> None:
-        def open_pcd(self, file_path, verbose=False):
-            """ open .pcd """
-            if verbose:
-                start = time()
-                print(f"Opening file {file_path} ...")
+    def open(self, file_path: str) -> None:
+        file_ext = "." + file_path.split('.')[-1]
+
+        @Timer(f"Открытие файла {file_path}")
+        def open_pcd(self, file_path):
             cloud = pypcd.PointCloud.from_path(file_path)
-            data = cloud.pc_data.view(np.float32).reshape(
-                cloud.pc_data.shape + (-1,))
-            ix = cloud.get_metadata()["fields"].index('x')
-            self.points = data[:, ix:ix + 3]
-            try:
-                ii = cloud.get_metadata()["fields"].index('Intensity')
-                self.intensity = np.nan_to_num(np.asarray(data[:, ii]))
-            except ValueError:
-                self.intensity = np.empty(0)
-            try:
-                il = cloud.get_metadata()["fields"].index('Illuminance')
-                self.illuminance = np.nan_to_num(np.asarray(data[:, il]))
-            except ValueError:
-                self.illuminance = np.empty(0)
-            try:
-                ir = cloud.get_metadata()["fields"].index('rgb')
-                rgb = pypcd.decode_rgb_from_pcl(data[:, ir])
-                self.rgb = np.nan_to_num(rgb)
-            except ValueError:
-                self.rgb = np.empty((0, 3))
-            try:
-                ig = cloud.get_metadata()["fields"].index('GpsTime')
-                self.gps_time = np.nan_to_num(np.asarray(data[:, ig]))
-            except ValueError:
-                self.gps_time = np.empty(0)
-            try:
-                iid = cloud.get_metadata()["fields"].index(
-                    'Original_cloud_index')
-                self.original_cloud_index = np.nan_to_num(
-                    np.asarray(data[:, iid]))
-            except ValueError:
-                self.original_cloud_index = np.empty(0)
-            if verbose:
-                end = time()-start
-                print(f"Time stacking data: {end:.3f} s")
+            cloud_data = cloud.pc_data
+            metadata_fields = cloud.get_metadata()["fields"]
 
-        def open_h5(self, file_path, verbose=False):
-            """ open .h5 """
-            if verbose:
-                start = time()
-                print(f"Opening file {file_path} ...")
-            h5f = h5py.File(file_path, 'r')
-            try:
-                self.points = np.asarray(h5f.get('points'))
-            except:
-                self.points = np.empty((0, 3))
-            try:
-                self.intensity = np.asarray(h5f.get('Intensity'))
-            except:
-                self.intensity = np.empty(0)
-            try:
-                self.illuminance = np.asarray(h5f.get('Illuminance'))
-            except:
-                self.illuminance = np.empty(0)
-            try:
-                self.rgb = np.asarray(h5f.get('rgb'))
-            except:
-                self.rgb = np.empty((0, 3))
-            try:
-                self.gps_time = np.asarray(h5f.get('GpsTime'))
-            except:
-                self.gps_time = np.empty(0)
-            try:
-                self.original_cloud_index = np.asarray(
-                    h5f.get('Original_cloud_index'))
-            except:
-                self.original_cloud_index = np.empty(0)
-            h5f.close()
-            if verbose:
-                end = time()-start
-                print(f"Time stacking data: {end:.3f} s")
+            for feature in self._features.values():
+                pcd_fields = feature.pcd_field_names
+                try:
+                    # Handle single field features (like rgb, intensity)
+                    if len(pcd_fields) == 1 and pcd_fields[0] in metadata_fields:
+                        feature.unpack_pcd_data(cloud_data[pcd_fields[0]])
+                    # Handle multi-field features (like points, normals)
+                    elif all(f in metadata_fields for f in pcd_fields):
+                        data_slice = np.array([cloud_data[f] for f in pcd_fields]).T
+                        feature.unpack_pcd_data(data_slice)
 
-        def open_las(self, file_path, verbose=False):
-            """ open .las """
-            if verbose:
-                start = time()
-                print(f"Opening file {file_path} ...")
+                except (ValueError, IndexError, KeyError):
+                    pass  # Field not found
+
+        @Timer(f"Открытие файла {file_path}")
+        def open_h5(self, file_path):
+            with h5py.File(file_path, 'r') as h5f:
+                for name, feature in self._features.items():
+                    if name in h5f:
+                        feature.data = np.asarray(h5f.get(name))
+
+        @Timer(f"Открытие файла {file_path}")
+        def open_las_laz(self, file_path):
             las = laspy.read(file_path)
-            points = np.vstack(
-                [las.points.x, las.points.y, las.points.z]).transpose()
-            self.points = points
-            try:
-                self.intensity = las.intensity
-            except:
-                self.intensity = np.empty(0)  # np.full(points.shape[0], 0)
-            try:
-                self.illuminance = las.illuminance
-            except:
-                self.illuminance = np.empty(0)
-            try:
-                rgb = np.vstack(
-                    [las.points.red, las.points.green, las.points.blue]).transpose()
-                self.rgb = (rgb // 256).astype(np.uint8)
-            except:
-                # np.zeros((points.shape[0], 3), dtype=np.int32)
-                self.rgb = np.empty((0, 3))
-            try:
-                self.original_cloud_index = las.point_source_id
-            except:
-                self.original_cloud_index = np.empty(0)
-            try:
-                self.gps_time = las.gps_time
-            except:
-                self.gps_time = np.empty(0)
-            if verbose:
-                end = time()-start
-                print(f"Time stacking data: {end:.3f} s")
+            for feature in self._features.values():
+                try:
+                    # Uses the first (and likely only) attr from the feature
+                    attr_name, loader_func = next(iter(feature.las_attrs.items()))
+                    feature.data = loader_func(las)
+                except (AttributeError, IndexError, StopIteration):
+                    pass  # Field not in las file
 
-        def open_laz(self, file_path, verbose=False):
-            """ open .laz """
-            if verbose:
-                start = time()
-                print(f"Opening file {file_path} ...")
-            with laspy.open(file_path) as fh:
-                las = fh.read()
-                points = np.vstack(
-                    [las.points.x, las.points.y, las.points.z]).transpose()
-                self.points = points
-                try:
-                    self.intensity = np.nan_to_num(
-                        np.asarray(las.intensity, dtype=np.int32))
-                except:
-                    self.intensity = np.empty(0)  # np.full(points.shape[0], 0)
-                try:
-                    self.illuminance = np.nan_to_num(
-                        np.asarray(las.illuminance, dtype=np.int32))
-                except:
-                    self.illuminance = np.empty(0)
-                try:
-                    rgb = np.vstack(
-                        [las.points.red, las.points.green, las.points.blue]).transpose()
-                    self.rgb = (rgb // 256).astype(np.uint8)
-                except:
-                    # np.zeros((points.shape[0], 3), dtype=np.int32)
-                    self.rgb = np.empty((0, 3))
-                try:
-                    self.original_cloud_index = np.nan_to_num(np.asarray(
-                        las.point_source_id, dtype=np.float16))
-                except:
-                    self.original_cloud_index = np.empty(0)
-                try:
-                    self.gps_time = np.nan_to_num(
-                        np.asarray(las.gps_time, dtype=np.float16))
-                except AttributeError:
-                    self.gps_time = np.empty(0)
-            if verbose:
-                end = time()-start
-                print(f"Time stacking data: {end:.3f} s")
-
-        def open_csv(self, file_path, verbose=False):
-            """ open .csv """
-            if verbose:
-                start = time()
-                print(f"Opening file {file_path} ...")
+        @Timer(f"Открытие файла {file_path}")
+        def open_csv(self, file_path):
             df = pd.read_csv(file_path)
-            self.points = df[['x', 'y', 'z']
-                             ].values if 'x' in df.columns else np.empty((0, 3))
-            self.intensity = df['Intensity'].values if 'Intensity' in df.columns else np.empty(
-                0)
-            self.gps_time = df['GpsTime'].values if 'GpsTime' in df.columns else np.empty(
-                0)
-            self.original_cloud_index = df['Original_cloud_index'].values if 'Original_cloud_index' in df.columns else np.empty(
-                0)
-            self.rgb = df[['red', 'green', 'blue']
-                          ].values if 'red' in df.columns else np.empty((0, 3))
-            self.illuminance = df['Illuminance'].values if 'Illuminance' in df.columns else np.empty(
-                0)
-            if verbose:
-                end = time()-start
-                print(f"Time stacking data: {end:.3f} s")
+            for feature in self._features.values():
+                cols = feature.df_column_names
+                if all(c in df.columns for c in cols):
+                    data = df[cols].values
+                    if isinstance(feature, ScalarFeature):
+                        data = data.ravel()
+                    feature.data = data
 
-        def open_txt(self, file_path, verbose=False):
-            """ open .txt """
-
-            if verbose:
-                start = time()
-                print(f"Opening file {file_path} ...")
-            # Read the file
+        @Timer(f"Открытие файла {file_path}")
+        def open_txt(self, file_path):
             with open(file_path, 'r') as file:
-                lines = file.readlines()
+                header_line = file.readline().strip()
 
-            # Read the header line
-            header = [
-                col.strip('//') for col in lines[0].strip().split() if col.startswith('//')]
-            if lines[0].startswith('//'):
-                header = [col.strip('//') for col in lines[0].split()]
+            if header_line.startswith('//'):
+                header = [col.strip('/') for col in header_line.split()]
             else:
-                if verbose:
-                    print("Header is empty. Using default column names.")
-                header = ['X', 'Y', 'Z', 'Intensity',
-                          'R', 'G', 'B', 'Original_cloud_index', 'Gps_Time', 'Illuminance_(PCV)']
-            # Initialize dictionaries to store data
-            data = {col: [] for col in header}
+                raise ValueError(
+                    f"Заголовок не найден в файле {file_path}. "
+                    f"Ожидалась строка, начинающаяся с '//'."
+                )
 
-            # Read the data lines
-            for line in lines[1:]:
-                values = line.strip().split()
-                for col, value in zip(header, values):
-                    data[col].append(float(value))
+            # Параметр `names` в pandas требует уникальных имен. Чтобы обработать
+            # возможные дубликаты в заголовке файла, мы читаем данные без заголовка
+            # и затем выбираем столбцы по их целочисленному индексу.
+            df = pd.read_csv(file_path, sep=r'\s+', comment='/', header=None)
 
-            # Initialize dictionaries to store data
-            data = {col: [] for col in header if not col.startswith('//')}
+            # Мы создаем отображение каждого уникального имени столбца на индекс его
+            # первого появления. Это гарантирует, что если имя столбца дублируется,
+            # мы будем рассматривать только первое из них, выполняя требование
+            # "читать только уникальные".
+            unique_header_map = {name: i for i, name in reversed(list(enumerate(header)))}
 
-            # Read the data lines
-            for line in lines[1:]:
-                values = line.strip().split()
-                for col, value in zip(header, values):
-                    if col.startswith('//'):
-                        continue
-                    data[col].append(float(value))
+            for feature in self._features.values():
+                # Отображение стандартных имен признаков на имена в заголовке txt
+                column_map = feature.txt_column_map  # например, {'nx': 'Nx', 'ny': 'Ny', 'nz': 'Nz'}
 
-            # Convert lists to numpy arrays for easier manipulation
-            for col in data:
-                data[col] = np.array(data[col])
+                # Находим целочисленные индексы столбцов, необходимых для этого признака
+                col_indices = []
+                for df_col in feature.df_column_names:
+                    txt_col_name = column_map.get(df_col)
+                    if txt_col_name and txt_col_name in unique_header_map:
+                        col_indices.append(unique_header_map[txt_col_name])
 
-            # Assign data to attributes
-            if 'X' in data and 'Y' in data and 'Z' in data:
-                self.points = np.vstack(
-                    (data['X'], data['Y'], data['Z'])).T
-            if 'Intensity' in data:
-                self.intensity = data['Intensity']
-            if 'R' in data and 'G' in data and 'B' in data:
-                self.rgb = np.vstack((data['R'], data['G'], data['B'])).T
-            if 'Original_cloud_index' in data:
-                self.original_cloud_index = data['Original_cloud_index']
-            if 'Gps_Time' in data:
-                self.gps_time = data['Gps_Time']
-            if 'Illuminance_(PCV)' in data:
-                self.illuminance = data['Illuminance_(PCV)']
-            if verbose:
-                end = time()-start
-                print(f"Time stacking data: {end:.3f} s")
+                if col_indices:
+                    # Удаляем дубликаты индексов, сохраняя порядок, на случай, если
+                    # несколько столбцов признака отображаются на один и тот же
+                    # исходный столбец в txt-файле.
+                    unique_indices = list(dict.fromkeys(col_indices))
 
-        if file_path.endswith(".h5"):
-            open_h5(self, file_path, verbose=verbose)
-        elif file_path.endswith('.pcd'):
-            open_pcd(self, file_path, verbose=verbose)
-        elif file_path.endswith('.las'):
-            open_las(self, file_path, verbose=verbose)
-        elif file_path.endswith('.laz'):
-            open_laz(self, file_path, verbose=verbose)
-        elif file_path.endswith('.csv'):
-            open_csv(self, file_path, verbose=verbose)
-        elif file_path.endswith('.txt'):
-            open_txt(self, file_path, verbose=verbose)
+                    data = df.iloc[:, unique_indices].values
+                    if isinstance(feature, ScalarFeature):
+                        data = data.ravel()
+                    feature.data = data
+
+        # Dispatch table for opening files
+        openers = {
+            ".h5": open_h5,
+            '.pcd': open_pcd,
+            '.las': open_las_laz,
+            '.laz': open_las_laz,
+            '.csv': open_csv,
+            '.txt': open_txt,
+        }
+
+        if file_ext in openers:
+            openers[file_ext](self, file_path)
         else:
             print("invalid format")
+
         self.check_and_pad_fields()
 
     def check_and_pad_fields(self):
-        """ check if all fields have the same length, and pad with zeros if not """
+        """
+        Проверяет, все ли поля имеют одинаковую длину. Если нет, то для полей с
+        нулевой длиной создаются массивы нулей, равные по длине максимальной
+        длине среди всех полей.
+        """
+        # Сначала находим максимальную длину среди всех полей
+        num_points = 0
+        all_lengths = []
+        for f in self._features.values():
+            # Убедимся, что у данных есть размерность (не 0-d array) перед вызовом len()
+            if hasattr(f.data, 'ndim') and f.data.ndim > 0:
+                all_lengths.append(len(f.data))
 
-        len_points = len(self.points) if self.points is not None else 0
-        len_intensity = len(
-            self.intensity) if self.intensity is not None else 0
-        len_rgb = len(self.rgb) if self.rgb is not None else 0
-        len_original_cloud_index = len(
-            self.original_cloud_index) if self.original_cloud_index is not None else 0
-        len_gps_time = len(self.gps_time) if self.gps_time is not None else 0
-        len_illuminance = len(
-            self.illuminance) if self.illuminance is not None else 0
+        if all_lengths:
+            num_points = max(all_lengths)
 
-        max_length = max(len_points, len_intensity, len_rgb,
-                         len_original_cloud_index, len_gps_time, len_illuminance)
+        if num_points == 0:
+            # Если все поля пустые, делать нечего
+            return
 
-        if len_points < max_length:
-            padding = np.zeros((max_length - len_points, 3))
-            self.points = np.vstack((self.points, padding))
+        # Убедимся, что points инициализированы, если нужно
+        if self._features['points'].size == 0:
+            self.points = np.zeros((num_points, 3))
 
-        if len_intensity < max_length:
-            padding = np.zeros(max_length - len_intensity)
-            if self.intensity is not None:
-                self.intensity = np.hstack((self.intensity, padding))
-            else:
-                self.intensity = padding
+        # Теперь проходим по всем полям и дополняем те, что пусты
+        for name, feature in self._features.items():
+            if feature.size < num_points:
+                if isinstance(feature, VectorFeature):
+                    shape = (num_points, feature.num_columns)
+                else:  # ScalarFeature
+                    shape = (num_points,)
 
-        if len_rgb < max_length:
-            padding = np.zeros((max_length - len_rgb, 3))
-            if self.rgb is not None:
-                self.rgb = np.vstack((self.rgb, padding))
-            else:
-                self.rgb = padding
-
-        if len_original_cloud_index < max_length:
-            padding = np.zeros(max_length - len_original_cloud_index)
-            if self.original_cloud_index is not None:
-                self.original_cloud_index = np.hstack(
-                    (self.original_cloud_index, padding))
-            else:
-                self.original_cloud_index = padding
-
-        if len_gps_time < max_length:
-            padding = np.zeros(max_length - len_gps_time)
-            if self.gps_time is not None:
-                self.gps_time = np.hstack((self.gps_time, padding))
-            else:
-                self.gps_time = padding
-
-        if len_illuminance < max_length:
-            padding = np.zeros(max_length - len_illuminance)
-            if self.illuminance is not None:
-                self.illuminance = np.hstack((self.illuminance, padding))
-            else:
-                self.illuminance = padding
+                # Используем тип данных по умолчанию или float32
+                dtype = feature.default_value.dtype
+                feature.data = np.zeros(shape, dtype=dtype)
 
     def clone(self) -> 'PCD':
         """ clone PCD object """
         return copy.deepcopy(self)
 
-    def sample_fps(self, num_sample: int, verbose: bool = False) -> None:
+    @Timer("Сэмплирование точек (FPS)")
+    def sample_fps(self, num_sample: int) -> None:
         """ sampling 'num_sample' points from 'PCD' class via farthest point sampling algorithm """
-        start = time()
-        if verbose:
-            end = time() - start
-            print(f"Time sampling (fps): {end:.3f} s")
         np_points = np.asarray([self.points])
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         points_torch = torch.Tensor(np_points).to(device)
-        centroids = fps.farthest_point_sample(points_torch, num_sample)
-        pt_sampled = points_torch[0][centroids[0]]
-        centroids = centroids.cpu().data.numpy()
-        self.intensity = self.intensity[centroids[0]]
-        self.rgb = self.rgb[centroids[0]]
-        self.original_cloud_index = self.original_cloud_index[centroids[0]]
-        self.gps_time = self.gps_time[centroids[0]]
-        self.illuminance = self.illuminance[centroids[0]]
-        self.points = pt_sampled.cpu().detach().numpy()
+        centroids = fps.farthest_point_sample(points_torch, num_sample).cpu().data.numpy()[0]
+
+        for name, feature in self._features.items():
+            if feature.size > 0:
+                feature.data = feature.data[centroids]
 
     def index_cut(self, idx_labels: np.ndarray) -> None:
-        """ cut points and intensity using indexes """
-        # TODO: fix normals
-        self.points = self.points[idx_labels]
-        try:
-            self.intensity = self.intensity[idx_labels]
-        except:
-            self.intensity = np.empty(0)
-        try:
-            self.original_cloud_index = self.original_cloud_index[idx_labels]
-        except:
-            self.original_cloud_index = np.empty(0)
-        try:
-            self.gps_time = self.gps_time[idx_labels]
-        except:
-            self.gps_time = np.empty(0)
-        try:
-            self.rgb = self.rgb[idx_labels]
-        except:
-            self.rgb = np.empty((0, 3))
-        try:
-            self.illuminance = self.illuminance[idx_labels]
-        except:
-            self.illuminance = np.empty(0)
+        """ cut points and all other fields using indexes """
+        for name, feature in self._features.items():
+            if feature.size > 0 and hasattr(feature.data, '__len__') and len(feature.data) > 0:
+                try:
+                    feature.data = feature.data[idx_labels]
+                except IndexError:
+                    # This can happen if a field was not correctly sized.
+                    # We create an empty array of the correct shape.
+                    shape = (len(idx_labels), feature.data.shape[1]) if feature.data.ndim > 1 else (len(idx_labels),)
+                    feature.data = np.empty(shape)
 
-    def estimate_normals(self, radius: float = 0.1, max_nn: int = 30) -> None:
-        """ estimate normals """
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(self.points)
-        pcd.estimate_normals(
-            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=radius, max_nn=max_nn))
-        self._normals = np.asarray(pcd.normals)
+    def compute_feature(self, name: str, **kwargs):
+        """
+        Вычисляет данные для указанного признака.
 
-    def get_normals(self, radius: float = 0.1, max_nn: int = 30) -> np.ndarray:
-        """ get normals """
-        if self._normals is None:
-            print("Estimating normals")
-            self.estimate_normals(radius=radius, max_nn=max_nn)
-        return self._normals
-
-    @property
-    def normals(self) -> np.ndarray:
-        return self.get_normals()
-
-    def unique(self) -> None:
-        """ leaves only unique point values """
-        self.points, unique_indices = np.unique(
-            self.points, axis=0, return_index=True)
-        self.intensity = np.take(self.intensity, unique_indices)
-        self.rgb = np.take(self.rgb, unique_indices, axis=0)
-        self.original_cloud_index = np.take(
-            self.original_cloud_index, unique_indices)
-        self.gps_time = np.take(self.gps_time, unique_indices)
-        self.illuminance = np.take(self.illuminance, unique_indices)
+        :param name: Имя признака для вычисления (например, 'normals', 'illuminance').
+        :param kwargs: Дополнительные аргументы, передаваемые в метод compute() признака.
+        """
+        if name in self._features:
+            feature = self._features[name]
+            feature.compute(self, **kwargs)
+        else:
+            raise ValueError(f"Feature '{name}' not found in PCD object.")
 
     def append(self, other: 'PCD') -> None:
         """ append PCD object """
         if not isinstance(other, PCD):
             raise TypeError("Argument must be an instance of PCD")
-        self.points = np.concatenate((self.points, other.points), axis=0)
-        self.intensity = np.concatenate(
-            (self.intensity, other.intensity), axis=0)
-        self.rgb = np.concatenate((self.rgb, other.rgb), axis=0)
-        self.original_cloud_index = np.concatenate(
-            (self.original_cloud_index, other.index), axis=0)
-        self.gps_time = np.concatenate((self.gps_time, other.gps_time), axis=0)
-        self.illuminance = np.concatenate(
-            (self.illuminance, other.illuminance), axis=0)
+
+        # Ensure the other PCD has the same fields, padding if necessary
+        other.check_and_pad_fields()
+        self.check_and_pad_fields()
+
+        num_points_self = len(self.points) if hasattr(self.points, '__len__') else 0
+        num_points_other = len(other.points) if hasattr(other.points, '__len__') else 0
+
+        # If one cloud is empty, just copy the other
+        if num_points_self == 0:
+            self._features = copy.deepcopy(other._features)
+            self._create_properties()
+            return
+        if num_points_other == 0:
+            return
+
+        for name, self_feature in self._features.items():
+            other_feature = other._features.get(name)
+            if other_feature is not None and other_feature.size > 0:
+                # Ensure self_feature has data to concatenate with
+                if self_feature.size == 0 and num_points_self > 0:
+                    # Initialize with default-like empty data of the correct length
+                    if isinstance(self_feature, VectorFeature):
+                        self_feature.data = np.zeros((num_points_self, self_feature.num_columns))
+                    else:
+                        self_feature.data = np.zeros(num_points_self)
+
+                self_feature.data = np.concatenate((self_feature.data, other_feature.data), axis=0)
+        self._create_properties()
 
     def show(self, color_field: str = 'intensity') -> None:
         """ show PCD object """
@@ -688,8 +411,8 @@ class PCD:
             colors = np.asarray(self.rgb)
             colors = colors / 255.0  # normalize RGB values
             pcd.colors = o3d.utility.Vector3dVector(colors)
-        elif hasattr(self, color_field) and getattr(self, color_field).size > 0:
-            field_values = np.asarray(getattr(self, color_field))
+        elif color_field in self._features and self._features[color_field].size > 0:
+            field_values = np.asarray(self._features[color_field].data)
             field_values = (field_values - field_values.min()) / \
                 (field_values.max() - field_values.min())
             colors = np.zeros((field_values.shape[0], 3))
@@ -706,50 +429,90 @@ class PCD:
         vis.run()
 
     def normalize_fields(self) -> None:
-        """ normalize fields """
+        """ normalize all numeric fields to range [0, 1] """
         def normalize(array: np.ndarray) -> np.ndarray:
             if array.size > 0:
-                return (array - array.min()) / (array.max() - array.min())
+                min_val, max_val = array.min(), array.max()
+                if max_val - min_val > 1e-6:
+                    return (array - min_val) / (max_val - min_val)
             return array
-        self.points = normalize(self.points)
-        self.intensity = normalize(self.intensity)
-        self.rgb = normalize(self.rgb)
-        self.original_cloud_index = normalize(self.original_cloud_index)
-        self.gps_time = normalize(self.gps_time)
-        self.illuminance = normalize(self.illuminance)
+
+        for name, feature in self._features.items():
+            feature.data = normalize(feature.data)
         self.nan_to_zero()
 
     def shift_to_origin(self) -> None:
-        """ shift points to origin """
-        self.points = self.points - self.points.mean(axis=0)
+        """ shift points to origin (center of mass at zero) """
+        if self.points.size > 0:
+            self.points -= self.points.mean(axis=0)
 
     def shift_to_zero(self) -> None:
-        """ shift points to zero """
-        self.points = self.points - self.points.min(axis=0)
+        """ shift points so that min values for all axes are zero """
+        if self.points.size > 0:
+            self.points -= self.points.min(axis=0)
 
     def nan_to_zero(self) -> None:
-        """ replace NaN to 0 """
-        self.points = np.nan_to_num(self.points)
-        self.intensity = np.nan_to_num(self.intensity)
-        self.rgb = np.nan_to_num(self.rgb)
-        self.original_cloud_index = np.nan_to_num(self.original_cloud_index)
-        self.gps_time = np.nan_to_num(self.gps_time)
-        self.illuminance = np.nan_to_num(self.illuminance)
+        """ replace NaN to 0 in all fields """
+        for name, feature in self._features.items():
+            feature.data = np.nan_to_num(feature.data)
 
-    def visual_gif(self, path_gif: str, zoom: float = 0.4, point_size: float = 4.0) -> None:
-        """ visualize PCD object as gif """
+    @Timer("Визуализация PCD как gif")
+    def visual_gif(self, path_gif: str, zoom: float = 0.4, point_size: float = 4.0, color_field: str = 'rgb') -> None:
+        """ Визуализировать объект PCD как gif с цветовой схемой blue > green > yellow > red """
+        import pyvista
+        import numpy as np
+
         cloud = pyvista.PointSet(self.points)
-        scalars = np.linalg.norm(cloud.points - cloud.center, axis=1)
+
+        def colormap_bgyr(values: np.ndarray) -> np.ndarray:
+            """
+            Кастомная цветовая карта: blue -> green -> yellow -> red
+            values: нормализованный массив [0, 1]
+            """
+            # Градиент: 0.0 - синий, 0.33 - зеленый, 0.66 - желтый, 1.0 - красный
+            colors = np.zeros((values.shape[0], 3))
+            for i, v in enumerate(values):
+                if v <= 0.33:
+                    # от синего (0,0,1) к зеленому (0,1,0)
+                    t = v / 0.33
+                    colors[i] = [0 * (1-t) + 0 * t, 0 *
+                                 (1-t) + 1 * t, 1 * (1-t) + 0 * t]
+                elif v <= 0.66:
+                    # от зеленого (0,1,0) к желтому (1,1,0)
+                    t = (v - 0.33) / (0.66 - 0.33)
+                    colors[i] = [0 * (1-t) + 1 * t, 1, 0]
+                else:
+                    # от желтого (1,1,0) к красному (1,0,0)
+                    t = (v - 0.66) / (1.0 - 0.66)
+                    colors[i] = [1, 1 * (1-t) + 0 * t, 0]
+            return colors
+
+        # Определяем цвета
+        if color_field == 'rgb' and self.rgb.size > 0:
+            # Если rgb, используем как есть, но нормализуем
+            colors = np.asarray(self.rgb)
+            colors = colors / 255.0  # нормализация RGB
+        elif color_field in self._features and self._features[color_field].size > 0:
+            field_values = np.asarray(self._features[color_field].data)
+            # Нормализация в [0, 1]
+            field_values = (field_values - field_values.min()) / \
+                (field_values.max() - field_values.min() + 1e-8)
+            colors = colormap_bgyr(field_values)
+        else:
+            # Цвет по умолчанию — синий
+            colors = np.ones(
+                (self.points.shape[0], 3)) * np.array([0.0, 0.0, 1.0])
+
         pl = pyvista.Plotter(off_screen=True)
         pl.add_mesh(
             cloud,
-            color='#fff7c2',
-            scalars=scalars,
+            scalars=colors,
+            rgb=True,
             opacity=1,
             point_size=point_size,
             show_scalar_bar=False,
         )
-        pl.background_color = 'k'
+        pl.background_color = (0.5, 0.5, 0.5)  # светло-серый фон
         pl.show(auto_close=False)
         pl.camera.zoom(zoom)
         path = pl.generate_orbital_path(
@@ -757,71 +520,3 @@ class PCD:
         pl.open_gif(path_gif)
         pl.orbit_on_path(path, write_frames=True)
         pl.close()
-
-    @normals.setter
-    def normals(self, value):
-        self._normals = value
-
-    @property
-    def points(self):
-        return self._points
-
-    @points.setter
-    def points(self, value):
-        self._points = value
-
-    @property
-    def x(self):
-        return self._points[:, 0]
-
-    @x.setter
-    def x(self, value):
-        self._points[:, 0] = value
-
-    @property
-    def y(self):
-        return self._points[:, 1]
-
-    @y.setter
-    def y(self, value):
-        self._points[:, 1] = value
-
-    @property
-    def z(self):
-        return self._points[:, 2]
-
-    @z.setter
-    def z(self, value):
-        self._points[:, 2] = value
-
-    @property
-    def rgb(self):
-        return self._rgb
-
-    @rgb.setter
-    def rgb(self, value):
-        self._rgb = value
-
-    @property
-    def r(self):
-        return self._rgb[:, 0]
-
-    @r.setter
-    def r(self, value):
-        self._rgb[:, 0] = value
-
-    @property
-    def g(self):
-        return self._rgb[:, 1]
-
-    @g.setter
-    def g(self, value):
-        self._rgb[:, 1] = value
-
-    @property
-    def b(self):
-        return self._rgb[:, 2]
-
-    @b.setter
-    def b(self, value):
-        self._rgb[:, 2] = value

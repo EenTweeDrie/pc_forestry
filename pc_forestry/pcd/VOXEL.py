@@ -5,15 +5,19 @@ from tqdm import tqdm
 import open3d as o3d
 import pandas as pd
 import copy
+from .TREE import TREE
 
 from loguru import logger
 
 
 class VOXEL(PCD):
     distance = None
+    distance_to_coord = None
+    distance_XY = None
+    distance_to_coord_XY = None
     _mean_normals = None
 
-    def __init__(self, index):
+    def __init__(self, index=np.empty((0, 3))):
         super().__init__()
         self.index = index
 
@@ -37,6 +41,26 @@ class VOXEL(PCD):
     def mean_gps_time(self):
         return np.mean(self.gps_time) if self.gps_time.size > 0 else None
 
+    @property
+    def std_rgb(self):
+        """Standard deviation of RGB values for points in the voxel."""
+        if self.num_points > 0:
+            return np.std(self.rgb, axis=0)
+        return None
+
+    @property
+    def mean_chromaticity(self):
+        """Mean chromaticity of RGB values for points in the voxel."""
+        if self.rgb.size > 0:
+            # avoid division by zero for black points (0,0,0)
+            rgb_sum = np.sum(self.rgb, axis=1, keepdims=True)
+            # handle cases where sum is zero
+            safe_rgb_sum = np.where(rgb_sum == 0, 1, rgb_sum)
+            chromaticity = self.rgb / safe_rgb_sum
+            return np.mean(chromaticity, axis=0)
+        else:
+            return None
+
     def estimate_mean_normals(self):
         self._mean_normals = np.mean(
             self.normals, axis=0) if self.normals.size > 0 else None
@@ -52,8 +76,15 @@ class VOXEL(PCD):
 
     @property
     def label(self):
-        return np.bincount(self.original_cloud_index.astype(np.int64)).argmax()\
+        self._label = np.bincount(
+            self.original_cloud_index.astype(np.int64)).argmax()
+        return self._label
 
+    @label.setter
+    def label(self, label):
+        self.original_cloud_index = np.full(
+            self.original_cloud_index.shape, label)
+        self._label = label
 
     def add_point(self,
                   point,
@@ -99,10 +130,10 @@ class VOXEL(PCD):
 
 
 class VOXELGRID:
-    def __init__(self, PC: PCD, voxel_size: float):
+    def __init__(self, PC: PCD, voxel_size: float, voxels: list[VOXEL] = None):
         self.PC = PC
         self.voxel_size = voxel_size
-        self.voxels = None
+        self.voxels = voxels
 
     @classmethod
     def create(cls, PC: PCD, voxel_size: float, verbose: bool = False):
@@ -154,6 +185,8 @@ class VOXELGRID:
         """ merge all fields of voxels in DataFrame """
         mean_normals = np.array([voxel.mean_normals for voxel in self.voxels])
         mean_rgb = np.array([voxel.mean_rgb for voxel in self.voxels])
+        std_rgb = np.array([voxel.std_rgb for voxel in self.voxels])
+        mean_chromaticity = np.array([voxel.mean_chromaticity for voxel in self.voxels])
         index = np.array([voxel.index for voxel in self.voxels])
         data = {
             'x': [index[i][0] for i in range(len(index))],
@@ -164,15 +197,28 @@ class VOXELGRID:
             'mean_r': [mean_rgb[i][0] for i in range(len(mean_rgb))],
             'mean_g': [mean_rgb[i][1] for i in range(len(mean_rgb))],
             'mean_b': [mean_rgb[i][2] for i in range(len(mean_rgb))],
+            'std_r': [std_rgb[i][0] if std_rgb[i] is not None else None for i in range(len(std_rgb))],
+            'std_g': [std_rgb[i][1] if std_rgb[i] is not None else None for i in range(len(std_rgb))],
+            'std_b': [std_rgb[i][2] if std_rgb[i] is not None else None for i in range(len(std_rgb))],
+            'mean_chromaticity_r': [mean_chromaticity[i][0] if mean_chromaticity[i] is not None else None for i in range(len(mean_chromaticity))],
+            'mean_chromaticity_g': [mean_chromaticity[i][1] if mean_chromaticity[i] is not None else None for i in range(len(mean_chromaticity))],
+            'mean_chromaticity_b': [mean_chromaticity[i][2] if mean_chromaticity[i] is not None else None for i in range(len(mean_chromaticity))],
             'mean_illuminance': [voxel.mean_illuminance for voxel in self.voxels],
             'mean_gps_time': [voxel.mean_gps_time for voxel in self.voxels],
             'distance': [voxel.distance for voxel in self.voxels],
+            'distance_to_coord': [voxel.distance_to_coord for voxel in self.voxels],
+            'distance_XY': [voxel.distance_XY for voxel in self.voxels],
+            'distance_to_coord_XY': [voxel.distance_to_coord_XY for voxel in self.voxels],
             'mean_normals_x': [mean_normals[i][0] for i in range(len(mean_normals))],
             'mean_normals_y': [mean_normals[i][1] for i in range(len(mean_normals))],
             'mean_normals_z': [mean_normals[i][2] for i in range(len(mean_normals))],
-            'label': [voxel.label for voxel in self.voxels]
+            'label': [voxel.label for voxel in self.voxels],
         }
-        return pd.DataFrame(data)
+        if hasattr(self, 'proba'):
+            data['proba'] = [voxel.proba for voxel in self.voxels]
+        df = pd.DataFrame(data)
+        df = df.apply(lambda x: x.fillna(0) if x.dtype == "float64" else x)
+        return df
 
     @property
     def normalized_df(self):
@@ -187,10 +233,26 @@ class VOXELGRID:
             (df['mean_g'].max() - df['mean_g'].min())
         df['mean_b'] = (df['mean_b'] - df['mean_b'].min()) / \
             (df['mean_b'].max() - df['mean_b'].min())
+        df['std_r'] = (df['std_r'] - df['std_r'].min()) / \
+            (df['std_r'].max() - df['std_r'].min())
+        df['std_g'] = (df['std_g'] - df['std_g'].min()) / \
+            (df['std_g'].max() - df['std_g'].min())
+        df['std_b'] = (df['std_b'] - df['std_b'].min()) / \
+            (df['std_b'].max() - df['std_b'].min())
+        df['mean_chromaticity_r'] = (df['mean_chromaticity_r'] - df['mean_chromaticity_r'].min()) / \
+            (df['mean_chromaticity_r'].max() - df['mean_chromaticity_r'].min())
+        df['mean_chromaticity_g'] = (df['mean_chromaticity_g'] - df['mean_chromaticity_g'].min()) / \
+            (df['mean_chromaticity_g'].max() - df['mean_chromaticity_g'].min())
+        df['mean_chromaticity_b'] = (df['mean_chromaticity_b'] - df['mean_chromaticity_b'].min()) / \
+            (df['mean_chromaticity_b'].max() - df['mean_chromaticity_b'].min())
         df['mean_illuminance'] = (df['mean_illuminance'] - df['mean_illuminance'].min()) / (
             df['mean_illuminance'].max() - df['mean_illuminance'].min())
         df['mean_gps_time'] = (df['mean_gps_time'] - df['mean_gps_time'].min()) / \
             (df['mean_gps_time'].max() - df['mean_gps_time'].min())
+        df['distance'] = (df['distance'] / self.voxel_size)
+        df['distance_to_coord'] = (df['distance_to_coord'] / self.voxel_size)
+        df['distance_XY'] = (df['distance_XY'] / self.voxel_size)
+        df['distance_to_coord_XY'] = (df['distance_to_coord_XY'] / self.voxel_size)
         df = df.apply(lambda x: x.fillna(0) if x.dtype == "float64" else x)
         return df
 
@@ -218,63 +280,257 @@ class VOXELGRID:
         vis.add_geometry(pcd)
         vis.run()
 
+    def visual_gif(self, path_gif: str, zoom: float = 0.4, point_size: float = 4.0, color_field: str = 'intensity') -> None:
+        """Визуализировать центры вокселей как gif с цветовой схемой blue > green > yellow > red, аналогично show"""
+        import pyvista
+        import numpy as np
+
+        # Получаем центры вокселей, как в show
+        voxel_centers = np.array([
+            voxel.calculate_center(self.voxel_size)
+            for voxel in self.voxels
+            if voxel.calculate_center(self.voxel_size) is not None
+        ])
+
+        if voxel_centers.size == 0:
+            print("Нет центров вокселей для визуализации.")
+            return
+
+        cloud = pyvista.PointSet(voxel_centers)
+
+        def colormap_bgyr(values: np.ndarray) -> np.ndarray:
+            """
+            Кастомная цветовая карта: blue -> green -> yellow -> red
+            values: нормализованный массив [0, 1]
+            """
+            colors = np.zeros((values.shape[0], 3))
+            for i, v in enumerate(values):
+                if v <= 0.33:
+                    t = v / 0.33
+                    colors[i] = [0 * (1-t) + 0 * t, 0 *
+                                 (1-t) + 1 * t, 1 * (1-t) + 0 * t]
+                elif v <= 0.66:
+                    t = (v - 0.33) / (0.66 - 0.33)
+                    colors[i] = [0 * (1-t) + 1 * t, 1, 0]
+                else:
+                    t = (v - 0.66) / (1.0 - 0.66)
+                    colors[i] = [1, 1 * (1-t) + 0 * t, 0]
+            return colors
+
+        # Определяем цвета аналогично show
+        if voxel_centers.size > 0:
+            field_values = np.array([
+                getattr(voxel, color_field).mean()
+                for voxel in self.voxels
+                if hasattr(voxel, color_field) and getattr(voxel, color_field).size > 0
+            ])
+            print(field_values)
+            if color_field == 'original_cloud_index':
+                # Для original_cloud_index используем округление к ближайшему целому
+                field_values = np.array([
+                    round(getattr(voxel, color_field).mean())
+                    for voxel in self.voxels
+                    if hasattr(voxel, color_field) and getattr(voxel, color_field).size > 0
+                ])
+            if field_values.size > 0:
+                # Нормализация в [0, 1]
+                field_values = (field_values - field_values.min()) / \
+                    (field_values.max() - field_values.min() + 1e-8)
+
+                colors = colormap_bgyr(field_values)
+            else:
+                colors = np.ones(
+                    (voxel_centers.shape[0], 3)) * np.array([0.0, 0.0, 1.0])
+        else:
+            colors = np.ones(
+                (voxel_centers.shape[0], 3)) * np.array([0.0, 0.0, 1.0])
+
+        pl = pyvista.Plotter(off_screen=True)
+        pl.add_mesh(
+            cloud,
+            scalars=colors,
+            rgb=True,
+            opacity=1,
+            point_size=point_size,
+            show_scalar_bar=False,
+        )
+        pl.background_color = (0.5, 0.5, 0.5)
+        pl.show(auto_close=False)
+        pl.camera.zoom(zoom)
+        path = pl.generate_orbital_path(
+            n_points=36, shift=cloud.length/3, factor=3.0)
+        pl.open_gif(path_gif)
+        pl.orbit_on_path(path, write_frames=True)
+        pl.close()
+
     def get_voxels_by_layer(self, layer: int, dimension: int = 2) -> list:
         """Возвращает все воксели с указанного слоя"""
         return [voxel for voxel in self.voxels if voxel.index[dimension] == layer]
 
-    def calculate_distances_to_coordinate(self, coordinate) -> dict:
-        """Считает расстояния до координаты дерева для всех вокселей"""
+    def get_pcd_by_voxels(self, voxels: list) -> PCD:
+        pcd = PCD()
+        for voxel in voxels:
+            pcd.append(voxel)
+        return pcd
+
+    def get_tree_by_voxels(self, voxels: list) -> TREE:
+        tree = TREE()
+        for voxel in voxels:
+            tree.append(voxel)
+        return tree
+
+    def calculate_distances_to_coordinate_by_layer(self, coordinate, layer: int) -> dict:
+        """Считает расстояния до координаты дерева для всех вокселей указанного слоя"""
         coordinate = [coordinate[0], coordinate[1], 0]
         distances = {}
-        voxels = self.get_voxels_by_layer(0)
+        voxels = self.get_voxels_by_layer(layer)
         for voxel in voxels:
             center = voxel.calculate_center(self.voxel_size)
             if center is not None:
                 distance = np.linalg.norm(
                     np.array(center) - np.array(coordinate))
                 distances[voxel.index] = distance
+                if layer == 0:
+                    self.get_voxel_by_grid_index(
+                        voxel.index).distance = distance
+                self.get_voxel_by_grid_index(
+                    voxel.index).distance_to_coord = distance
+        return distances
+
+    def calculate_distances_to_coordinate_by_layer_XY(self, coordinate, layer: int) -> dict:
+        """Считает расстояния до координаты дерева для всех вокселей указанного слоя"""
+        coordinate = [coordinate[0], coordinate[1], 0]
+        distances = {}
+        voxels = self.get_voxels_by_layer(layer)
+        for voxel in voxels:
+            center = voxel.calculate_center(self.voxel_size)
+            if center is not None:
+                # Расстояние без учета координаты Z (только X и Y)
+                center_2d = [center[0], center[1]]
+                coordinate_2d = [coordinate[0], coordinate[1]]
+                distance = np.linalg.norm(
+                    np.array(center_2d) - np.array(coordinate_2d))
+                distances[voxel.index] = distance
+                if layer == 0:
+                    self.get_voxel_by_grid_index(
+                        voxel.index).distance_XY = distance
+                self.get_voxel_by_grid_index(
+                    voxel.index).distance_to_coord_XY = distance
+        return distances
+
+    def calculate_distances_to_previous_layer_by_layer(self, coordinate, layer: int) -> dict:
+        """Считает расстояния до ближайшего вокселя в нижнем слое с label = 0 (ствол) для указанного слоя"""
+
+        current_layer_voxels = self.get_voxels_by_layer(layer)
+        distances = {}
+
+        if layer == 0:
+            distances_first_layer = self.calculate_distances_to_coordinate_by_layer(
+                coordinate, layer)
+            distances.update(distances_first_layer)
+
+        else:
+            # find labeled voxels in previous layers
+            labeled_voxels = []
+            i = layer - 1
+            while not labeled_voxels:
+                if i < 0:
+                    # TODO: fix this
+                    break
+                previous_layer_voxels = self.get_voxels_by_layer(i)
+                labeled_voxels = [
+                    voxel for voxel in previous_layer_voxels if voxel.label == 0]
+                i -= 1
+
+            for voxel in current_layer_voxels:
+                center = voxel.calculate_center(self.voxel_size)
+                if center is not None and labeled_voxels:
+                    min_distance = float('inf')
+                    for labeled_voxel in labeled_voxels:
+                        labeled_center = labeled_voxel.calculate_center(
+                            self.voxel_size)
+                        if labeled_center is not None:
+                            distance = np.linalg.norm(
+                                np.array(center) - np.array(labeled_center))
+                            if distance < min_distance:
+                                min_distance = distance
+                    distances[voxel.index] = min_distance
+                    self.get_voxel_by_grid_index(
+                        voxel.index).distance = min_distance
+        return distances
+
+    def calculate_distances_to_previous_layer_by_layer_XY(self, coordinate, layer: int) -> dict:
+        """Считает расстояния до ближайшего вокселя в нижнем слое с label = 0 (ствол) для указанного слоя"""
+
+        current_layer_voxels = self.get_voxels_by_layer(layer)
+        distances = {}
+
+        if layer == 0:
+            distances_first_layer = self.calculate_distances_to_coordinate_by_layer_XY(coordinate, layer)
+            distances.update(distances_first_layer)
+        else:
+            labeled_voxels = []
+            i = layer - 1
+            while not labeled_voxels:
+                if i < 0:
+                    # TODO: fix this
+                    break
+                previous_layer_voxels = self.get_voxels_by_layer(i)
+                labeled_voxels = [
+                    voxel for voxel in previous_layer_voxels if voxel.label == 0]
+                i -= 1
+
+            for voxel in current_layer_voxels:
+                center = voxel.calculate_center(self.voxel_size)
+                if center is not None and labeled_voxels:
+                    min_distance = float('inf')
+                    for labeled_voxel in labeled_voxels:
+                        labeled_center = labeled_voxel.calculate_center(
+                            self.voxel_size)
+                        if labeled_center is not None:
+                            distance = np.linalg.norm(
+                                np.array(center[:2]) - np.array(labeled_center[:2]))
+                            if distance < min_distance:
+                                min_distance = distance
+                    distances[voxel.index] = min_distance
+                    self.get_voxel_by_grid_index(
+                        voxel.index).distance_XY = min_distance
+        return distances
+
+    def calculate_distances_to_coordinate(self, coordinate) -> dict:
+        index = np.array([voxel.index for voxel in self.voxels])
+        max_layer = max([index[i][2] for i in range(len(index))])
+        distances = {}
+        for layer in range(max_layer+1):
+            distances_layer = self.calculate_distances_to_coordinate_by_layer(coordinate, layer)
+            distances.update(distances_layer)
         return distances
 
     def calculate_distances_to_previous_layer(self, coordinate) -> dict:
-        """Считает расстояния до ближайшего вокселя в нижнем слое с label = 0 (ствол)"""
         index = np.array([voxel.index for voxel in self.voxels])
         max_layer = max([index[i][2] for i in range(len(index))])
+        distances = {}
 
-        for layer in tqdm(range(max_layer+1), desc="Calculating distances to previous layer"):
-            current_layer_voxels = self.get_voxels_by_layer(layer)
-            if layer == 0:
-                tree_center = [coordinate[0], coordinate[1], 0]
-                for voxel in current_layer_voxels:
-                    center = voxel.calculate_center(self.voxel_size)
-                    if center is not None:
-                        distance = np.linalg.norm(
-                            np.array(center) - np.array(tree_center))
-                        self.get_voxel_by_grid_index(
-                            voxel.index).distance = distance / self.voxel_size
-            else:
-                # find labeled voxels in previous layers
-                labeled_voxels = []
-                i = layer - 1
-                while not labeled_voxels:
-                    if i < 0:
-                        logger.error(f"No labeled voxels found in layer {i}")
-                        break
-                    previous_layer_voxels = self.get_voxels_by_layer(i)
-                    labeled_voxels = [
-                        voxel for voxel in previous_layer_voxels if voxel.label == 0]
-                    i -= 1
+        for layer in range(max_layer+1):
+            distances_layer = self.calculate_distances_to_previous_layer_by_layer(coordinate, layer)
+            distances.update(distances_layer)
+        return distances
 
-                for voxel in current_layer_voxels:
-                    center = voxel.calculate_center(self.voxel_size)
-                    if center is not None and labeled_voxels:
-                        min_distance = float('inf')
-                        for labeled_voxel in labeled_voxels:
-                            labeled_center = labeled_voxel.calculate_center(
-                                self.voxel_size)
-                            if labeled_center is not None:
-                                distance = np.linalg.norm(
-                                    np.array(center) - np.array(labeled_center))
-                                if distance < min_distance:
-                                    min_distance = distance
-                        self.get_voxel_by_grid_index(
-                            voxel.index).distance = min_distance / self.voxel_size
+    def calculate_distances_to_previous_layer_XY(self, coordinate) -> dict:
+        index = np.array([voxel.index for voxel in self.voxels])
+        max_layer = max([index[i][2] for i in range(len(index))])
+        distances = {}
+
+        for layer in range(max_layer+1):
+            distances_layer = self.calculate_distances_to_previous_layer_by_layer_XY(coordinate, layer)
+            distances.update(distances_layer)
+        return distances
+
+    def calculate_distances_to_coordinate_XY(self, coordinate) -> dict:
+        index = np.array([voxel.index for voxel in self.voxels])
+        max_layer = max([index[i][2] for i in range(len(index))])
+        distances = {}
+        for layer in range(max_layer+1):
+            distances_layer = self.calculate_distances_to_coordinate_by_layer_XY(coordinate, layer)
+            distances.update(distances_layer)
+        return distances
