@@ -135,19 +135,13 @@ class TREE(PCD):
         self.points = self.points - shift_this_call
         self.coordinate = np.array([0, 0, 0])
 
-    def find_trunk_ml(self) -> None:
+    def find_trunk_ml(self, model_path: str) -> None:
         from ..ml.ml_pipeline import MLPipeline
-        # mlp = (
-        #     MLPipeline(os.path.join(r'D:\lidar\data\classification\v2', 'run_2'))
-        #     .set_model_type('catboost')
-        #     .set_datasets_config({'voxel_size': 0.3})
-        #     .set_model(r'D:\lidar\data\classification\v2\run_1\models\catboost_model.pkl')
-        # )
         mlp = (
-            MLPipeline(os.path.join(r'D:\lidar\data\classification\v2', 'run_3'))
+            MLPipeline('tmp_ml_pipeline')
             .set_model_type('catboost')
             .set_datasets_config({'voxel_size': 0.3, 'type_df': 'original', 'fast_mode': True, 'proba_threshold': 0.35})
-            .set_model(r'D:\lidar\data\classification\v2\run_3\models\catboost_model.pkl')
+            .set_model(model_path)
         )
 
         vg = mlp.fit(self)
