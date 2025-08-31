@@ -336,6 +336,7 @@ class PCD:
         """ sampling 'num_sample' points from 'PCD' class via farthest point sampling algorithm """
         np_points = np.asarray([self.points])
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(device)
         points_torch = torch.Tensor(np_points).to(device)
         centroids = fps.farthest_point_sample(points_torch, num_sample).cpu().data.numpy()[0]
 

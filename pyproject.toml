@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "pc-forestry"
-version = "0.4.1"
+version = "0.4.2"
 description = ""
 authors = ["EenTweeDrie <eentweedrie@yandex.ru>"]
 license = "MIT"
@@ -10,6 +10,7 @@ packages = [{include = "pc_forestry"}]
 [tool.poetry.dependencies]
 python = "^3.10"
 #### pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+#### sympy-1.13.1 torch-2.5.1+cu121 torchaudio-2.5.1+cu121 torchvision-0.20.1+cu121
 #### torch = {version = "2.5.1+cu121", source = "pytorch"}
 #### torchvision = {version = "0.20.1+cu121", source = "pytorch"}
 #### torchaudio = {version = "2.5.1+cu121", source = "pytorch"} 

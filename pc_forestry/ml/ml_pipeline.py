@@ -166,6 +166,10 @@ class MLPipeline:
     def fit(self, pc: TREE) -> Any:
         assert self._model is not None, "Модель не обучена. Вызовите train() сначала."
         inferencer = MLInferencer(self._model)
+
+        # Извлекаем параметры для вычисления признаков из конфигурации
+        feature_params = self._datasets_config.get('feature_params', {})
+
         voxelgrid_with_predictions = (
             inferencer
             .predict_for_tree(
@@ -173,7 +177,8 @@ class MLPipeline:
                 voxel_size=self._datasets_config['voxel_size'],
                 fast_mode=self._datasets_config['fast_mode'],
                 type_df=self._datasets_config['type_df'],
-                proba_threshold=self._datasets_config['proba_threshold']
+                proba_threshold=self._datasets_config['proba_threshold'],
+                feature_params=feature_params
             )
         )
         return voxelgrid_with_predictions

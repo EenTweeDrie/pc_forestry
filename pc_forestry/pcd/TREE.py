@@ -135,12 +135,26 @@ class TREE(PCD):
         self.points = self.points - shift_this_call
         self.coordinate = np.array([0, 0, 0])
 
-    def find_trunk_ml(self, model_path: str) -> None:
+    def find_trunk_ml(self, model_path: str, config: dict = None) -> None:
         from ..ml.ml_pipeline import MLPipeline
+
+        # Дефолтная конфигурация
+        default_config = {
+            'voxel_size': 0.3,
+            'type_df': 'original',
+            'fast_mode': True,
+            'proba_threshold': 0.35,
+            'feature_params': {}  # Универсальные параметры для любых признаков
+        }
+
+        # Обновляем дефолтную конфигурацию пользовательской
+        if config:
+            default_config.update(config)
+
         mlp = (
             MLPipeline('tmp_ml_pipeline')
             .set_model_type('catboost')
-            .set_datasets_config({'voxel_size': 0.3, 'type_df': 'original', 'fast_mode': True, 'proba_threshold': 0.35})
+            .set_datasets_config(default_config)
             .set_model(model_path)
         )
 
@@ -151,6 +165,7 @@ class TREE(PCD):
     def find_trunk_cluster(self, height_threshold: float = 3.0, intensity_cut: float = 5000) -> None:
         """ find the trunk cluster """
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(device)
 
         try:
             # Step 1: Filter points within the lower height_threshold meters of the cloud
@@ -478,19 +493,35 @@ class TREE(PCD):
         else:
             return ValueError("No trunk slice found")
 
-    def estimate_multi_trunk_diameters(self, cut_height: float = 1.2, slice_height: float = 0.1, min_cluster_size: int = 50, min_points_per_trunk: int = 50):
+    def estimate_multi_trunk_diameters(self,
+                                       cut_height: float = 1.2,
+                                       slice_height: float = 0.1,
+                                       min_cluster_size: int = 50,
+                                       min_points_per_trunk: int = 50,
+                                       lof_contamination: float = 0.1,
+                                       dbscan_eps: float = 0.03,
+                                       estimation_method: str = 'lsq',
+                                       lsq_fallback_threshold: float = 1.05,
+                                       ransac_residual_threshold: float = 0.05):
         """
         Оценивает диаметры для многоствольных деревьев и сохраняет в pandas.DataFrame.
 
         1. Обрезает ствол на высоте `cut_height`.
         2. Кластеризует верхнюю часть для определения отдельных стволов.
-        3. Для каждого ствола берет срез `slice_height` и оценивает его диаметр.
+        3. Для каждого ствола берет срез `slice_height`, очищает его и оценивает диаметр.
 
         Args:
             cut_height (float): Высота для обрезки ствола от его основания.
             slice_height (float): Толщина среза для измерения диаметра.
             min_cluster_size (int): Минимальное количество точек для формирования кластера (ствола).
             min_points_per_trunk (int): Минимальное количество точек в кластере, чтобы считать его стволом.
+            lof_contamination (float): Параметр contamination для LocalOutlierFactor при очистке среза.
+            dbscan_eps (float): Параметр eps для DBSCAN при очистке среза.
+            estimation_method (str): Метод оценки диаметра ('lsq' или 'ransac').
+                'lsq': Метод наименьших квадратов с fallback-логикой (быстрее, чувствителен к выбросам).
+                'ransac': RANSAC (устойчив к выбросам, может быть медленнее).
+            lsq_fallback_threshold (float): Порог для fallback-логики в LSQ (e.g., 1.05 means diameter can't be > 5% larger than spread).
+            ransac_residual_threshold (float): Максимальное расстояние от точки до окружности для RANSAC (в метрах).
 
         Returns:
             pd.DataFrame or None: DataFrame с данными о каждом стволе (координаты центра, диаметр)
@@ -504,6 +535,12 @@ class TREE(PCD):
                 return None
 
         trunk_points = self.trunk.points
+
+        # Предварительная очистка всего ствола от выбросов
+        lof = LocalOutlierFactor(n_neighbors=10, contamination=0.1)
+        inliers_mask = lof.fit_predict(trunk_points) > 0
+        trunk_points = trunk_points[inliers_mask]
+
         z_min = np.min(trunk_points[:, 2])
 
         cut_z = z_min + cut_height
@@ -517,8 +554,7 @@ class TREE(PCD):
 
         # Кластеризация верхней части ствола по XY координатам для разделения на отдельные стволы
         xy_points = upper_trunk_points[:, :2]
-        clusterer = hdbscan.HDBSCAN(min_cluster_size=min_cluster_size,
-                                    core_dist_n_jobs=-1)
+        clusterer = hdbscan.HDBSCAN(min_cluster_size=min_cluster_size, core_dist_n_jobs=-1)
         labels = clusterer.fit_predict(xy_points)
 
         unique_labels = set(labels)
@@ -546,38 +582,82 @@ class TREE(PCD):
             slice_mask = (cluster_points[:, 2] >= cut_z) & (cluster_points[:, 2] < cut_z + slice_height)
             slice_points = cluster_points[slice_mask]
 
-            if slice_points.shape[0] < 4:  # Нужно хотя бы 4 точки для аппроксимации окружности
-                logger.warning(f"Ствол {label}: Недостаточно точек в срезе ({slice_points.shape[0]}) для оценки диаметра. Пропускаем.")
+            # Применяем фильтры для очистки среза
+            if slice_points.shape[0] > 20:  # Применяем очистку, если достаточно точек
+                lof = LocalOutlierFactor(n_neighbors=10, contamination=lof_contamination)
+                inliers_mask = lof.fit_predict(slice_points) > 0
+                slice_points = slice_points[inliers_mask]
+
+                if slice_points.shape[0] > 10:
+                    db = DBSCAN(eps=dbscan_eps, min_samples=5).fit(slice_points[:, :2])
+                    db_labels = db.labels_
+                    unique_db_labels, counts = np.unique(db_labels[db_labels != -1], return_counts=True)
+                    if counts.size > 0:
+                        largest_cluster_label = unique_db_labels[np.argmax(counts)]
+                        slice_points = slice_points[db_labels == largest_cluster_label]
+
+            if slice_points.shape[0] < 10:  # Нужно достаточно точек для надежной оценки
+                logger.warning(f"Ствол {label}: Недостаточно точек в срезе ({slice_points.shape[0]}) после очистки. Пропускаем.")
                 continue
 
             try:
-                # Оценка диаметра с помощью аппроксимации окружности методом наименьших квадратов
-                xc, yc, r, _ = cf.standardLSQ(slice_points[:, :2])
-                diameter_m = r * 2
+                slice_points_xy = slice_points[:, :2]
+                xc, yc, diameter_m = None, None, None
+                current_estimation_method = estimation_method
 
-                # Fallback: если аппроксимированный диаметр значительно больше реального разброса точек,
-                # используем разброс как более надежную оценку. Это помогает при плохой аппроксимации.
-                spread_x = np.ptp(slice_points[:, 0])  # Peak-to-peak (max - min)
-                spread_y = np.ptp(slice_points[:, 1])
-                max_spread = max(spread_x, spread_y)
+                if current_estimation_method == 'ransac':
+                    try:
+                        from skimage.measure import CircleModel, ransac
+                        if slice_points_xy.shape[0] < 3:
+                            raise ValueError("Недостаточно точек для RANSAC (минимум 3).")
 
-                if diameter_m > 1.05 * max_spread:
-                    logger.debug(
-                        f"Ствол {label}: Диаметр LSQ ({diameter_m*100:.2f} см) > 1.05 * разброса ({max_spread*100:.2f} см). "
-                        f"Используется fallback-диаметр, равный разбросу."
-                    )
-                    # diameter_m = (spread_x+spread_y)/2
-                    diameter_m = max_spread
+                        model_robust, _ = ransac(slice_points_xy, CircleModel, min_samples=3,
+                                                 residual_threshold=ransac_residual_threshold,
+                                                 max_trials=100)
+                        if model_robust is None:
+                            raise RuntimeError("RANSAC не смог найти модель окружности.")
 
-                diameter_cm = float(f"{diameter_m * 100:.2f}")
+                        xc, yc, r = model_robust.params
+                        diameter_m = r * 2
+                        logger.debug(f"Ствол {label}: Диаметр RANSAC = {diameter_m*100:.2f} см.")
+                    except Exception as e:
+                        logger.warning(f"Ствол {label}: RANSAC не удался ({e}). Переключаюсь на LSQ.")
+                        current_estimation_method = 'lsq'  # Fallback to LSQ
 
-                trunks_data.append({
-                    'xc': xc,
-                    'yc': yc,
-                    'z': cut_z,
-                    'diameter_cm': diameter_cm
-                })
-                logger.debug(f"Ствол {label}: диаметр = {diameter_cm:.2f} см, центр = ({xc:.2f}, {yc:.2f}, {cut_z:.2f})")
+                if current_estimation_method == 'lsq':
+                    if slice_points_xy.shape[0] < 4:
+                        logger.warning(f"Ствол {label}: Недостаточно точек ({slice_points_xy.shape[0]}) для LSQ. Пропускаем.")
+                        continue
+
+                    xc_l, yc_l, r_l, _ = cf.standardLSQ(slice_points_xy)
+                    diameter_lsq = r_l * 2
+
+                    spread_x = np.ptp(slice_points_xy[:, 0])
+                    spread_y = np.ptp(slice_points_xy[:, 1])
+                    max_spread = max(spread_x, spread_y)
+
+                    if diameter_lsq > lsq_fallback_threshold * max_spread:
+                        logger.debug(
+                            f"Ствол {label}: Диаметр LSQ ({diameter_lsq*100:.2f} см) > {lsq_fallback_threshold} * разброса ({max_spread*100:.2f} см). "
+                            f"Используется fallback-диаметр, равный разбросу."
+                        )
+                        diameter_m = max_spread
+                    else:
+                        diameter_m = diameter_lsq
+                    xc, yc = xc_l, yc_l
+
+                if diameter_m is not None:
+                    diameter_cm = float(f"{diameter_m * 100:.2f}")
+                    trunks_data.append({
+                        'xc': xc,
+                        'yc': yc,
+                        'z': cut_z,
+                        'diameter_cm': diameter_cm
+                    })
+                    logger.debug(f"Ствол {label}: диаметр = {diameter_cm:.2f} см, центр = ({xc:.2f}, {yc:.2f}, {cut_z:.2f})")
+                else:
+                    logger.warning(f"Ствол {label}: Не удалось оценить диаметр методом '{estimation_method}'. Пропускаем.")
+
             except Exception as e:
                 logger.error(f"Ствол {label}: Не удалось аппроксимировать окружность: {e}. Пропускаем.")
 

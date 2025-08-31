@@ -38,7 +38,7 @@ class MLInferencer:
             raise ValueError("Модель не может быть None.")
         self._model = model
 
-    def predict_for_tree(self, pc: TREE, voxel_size: float, fast_mode: bool = False, type_df: str = 'normalized', proba_threshold: float = 0.5) -> VOXELGRID:
+    def predict_for_tree(self, pc: TREE, voxel_size: float, fast_mode: bool = False, type_df: str = 'normalized', proba_threshold: float = 0.5, feature_params: dict = None) -> VOXELGRID:
         """
         Выполняет инференс для одного дерева из файла.
 
@@ -48,6 +48,8 @@ class MLInferencer:
         Args:
             file_path (str): Путь к файлу с данными о дереве (.pcd, .las, .txt).
             voxel_size (float): Размер вокселя.
+            feature_params (dict): Параметры для вычисления признаков. 
+                Структура: {'feature_name': {'param1': value1, 'param2': value2}}
 
         Returns:
             VOXELGRID: Объект воксельной сетки с результатами предсказания.
@@ -57,10 +59,19 @@ class MLInferencer:
                 "Модули TREE/VOXELGRID недоступны. Проверьте PYTHONPATH."
             )
 
+        if feature_params is None:
+            feature_params = {}
+
         pc.shift_to_coordinate()
-        pc.compute_feature('normals')
+
+        # Вычисляем нормали с параметрами если заданы
+        normals_params = feature_params.get('normals', {})
+        pc.compute_feature('normals', **normals_params)
+
+        # Вычисляем освещенность с параметрами если заданы
         if pc.illuminance is None or np.all(pc.illuminance == 0):
-            pc.compute_feature('illuminance')
+            illuminance_params = feature_params.get('illuminance', {})
+            pc.compute_feature('illuminance', **illuminance_params)
 
         vg = VOXELGRID.create(pc, voxel_size, verbose=False)
 

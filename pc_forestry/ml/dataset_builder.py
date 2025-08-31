@@ -22,8 +22,18 @@ class DatasetBuilder:
     @Timer("Подготовка файла")
     def _prepare_tree_file(self, file_path: str) -> TREE:
         pc = TREE.read(file_path)
-        pc.compute_feature('normals')
-        pc.compute_feature('illuminance')
+
+        # Получаем параметры для вычисления признаков из конфигурации
+        feature_params = self._datasets_config.get('feature_params', {})
+
+        # Вычисляем нормали с параметрами если заданы
+        normals_params = feature_params.get('normals', {})
+        pc.compute_feature('normals', **normals_params)
+
+        # Вычисляем освещенность с параметрами если заданы
+        illuminance_params = feature_params.get('illuminance', {})
+        pc.compute_feature('illuminance', **illuminance_params)
+
         return pc
 
     @Timer("Подготовка файлов")
