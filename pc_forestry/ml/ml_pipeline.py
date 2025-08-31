@@ -107,7 +107,7 @@ class MLPipeline:
         builder.build(types, force)
         return self
 
-    def train(self) -> 'MLPipeline':
+    def train(self, device: str = "GPU") -> 'MLPipeline':
         assert self._model_type is not None, "Модель не выбрана. Используйте set_model()."
 
         train_csv = self.path_manager.get_computed_dataset_path('train')
@@ -130,7 +130,8 @@ class MLPipeline:
         trainer.train(
             train_csv=train_csv,
             val_csv=val_csv,
-            models=[self._model_type]
+            models=[self._model_type],
+            device=device
         )
 
         # 2. Загрузка модели

@@ -23,16 +23,29 @@ CPU_CORES = 4
 
 
 def train_catboost(X_train: pd.DataFrame, y_train: pd.Series,
-                   X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None, use_gridsearch: bool = True) -> CatBoostClassifier:
+                   X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None, use_gridsearch: bool = True, device: str = "GPU") -> CatBoostClassifier:
     """Обучение CatBoostClassifier с опциональной GridSearchCV по выбранным гиперпараметрам."""
-    base_model = CatBoostClassifier(
-        loss_function="Logloss",
-        eval_metric="Logloss",
-        verbose=False,
-        random_state=42,
-        task_type="GPU",  # Используем GPU для ускорения
-        devices="0",      # Используем первую GPU
-    )
+
+    # Настройка устройства для CatBoost
+    if device.upper() == "GPU":
+        model_params = {
+            "loss_function": "Logloss",
+            "eval_metric": "Logloss",
+            "verbose": False,
+            "random_state": 42,
+            "task_type": "GPU",
+            "devices": "0",
+        }
+    else:
+        model_params = {
+            "loss_function": "Logloss",
+            "eval_metric": "Logloss",
+            "verbose": False,
+            "random_state": 42,
+            "task_type": "CPU",
+        }
+
+    base_model = CatBoostClassifier(**model_params)
 
     from catboost import Pool, cv
 
@@ -92,18 +105,30 @@ def train_catboost(X_train: pd.DataFrame, y_train: pd.Series,
 
 
 def train_xgboost(X_train: pd.DataFrame, y_train: pd.Series,
-                  X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None, use_gridsearch: bool = True):
+                  X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None, use_gridsearch: bool = True, device: str = "GPU"):
     """Обучение XGBoost - один из лучших градиентных бустингов."""
     from xgboost import XGBClassifier
 
-    base_model = XGBClassifier(
-        objective="binary:logistic",
-        eval_metric="auc",
-        random_state=42,
-        n_jobs=CPU_CORES,
-        tree_method="gpu_hist",  # GPU ускорение
-        gpu_id=0,
-    )
+    # Настройка устройства для XGBoost
+    if device.upper() == "GPU":
+        model_params = {
+            "objective": "binary:logistic",
+            "eval_metric": "auc",
+            "random_state": 42,
+            "n_jobs": CPU_CORES,
+            "tree_method": "gpu_hist",
+            "gpu_id": 0,
+        }
+    else:
+        model_params = {
+            "objective": "binary:logistic",
+            "eval_metric": "auc",
+            "random_state": 42,
+            "n_jobs": CPU_CORES,
+            "tree_method": "hist",
+        }
+
+    base_model = XGBClassifier(**model_params)
 
     if use_gridsearch:
         param_grid = {
@@ -154,19 +179,31 @@ def train_xgboost(X_train: pd.DataFrame, y_train: pd.Series,
 
 
 def train_lightgbm(X_train: pd.DataFrame, y_train: pd.Series,
-                   X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None, use_gridsearch: bool = True):
+                   X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None, use_gridsearch: bool = True, device: str = "GPU"):
     """Обучение LightGBM - быстрый и эффективный градиентный бустинг."""
     from lightgbm import LGBMClassifier
 
-    base_model = LGBMClassifier(
-        objective="binary",
-        metric="auc",
-        random_state=42,
-        n_jobs=CPU_CORES,
-        device="gpu",  # GPU ускорение
-        gpu_platform_id=0,
-        gpu_device_id=0,
-    )
+    # Настройка устройства для LightGBM
+    if device.upper() == "GPU":
+        model_params = {
+            "objective": "binary",
+            "metric": "auc",
+            "random_state": 42,
+            "n_jobs": CPU_CORES,
+            "device": "gpu",
+            "gpu_platform_id": 0,
+            "gpu_device_id": 0,
+        }
+    else:
+        model_params = {
+            "objective": "binary",
+            "metric": "auc",
+            "random_state": 42,
+            "n_jobs": CPU_CORES,
+            "device": "cpu",
+        }
+
+    base_model = LGBMClassifier(**model_params)
 
     if use_gridsearch:
         param_grid = {
@@ -219,7 +256,7 @@ def train_lightgbm(X_train: pd.DataFrame, y_train: pd.Series,
 
 
 def train_tabnet(X_train: pd.DataFrame, y_train: pd.Series,
-                 X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None):
+                 X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None, device: str = "GPU"):
     """Обучение TabNet - нейронная сеть специально для табличных данных."""
     import torch
     import gc
@@ -240,6 +277,12 @@ def train_tabnet(X_train: pd.DataFrame, y_train: pd.Series,
     X_train_np = X_train.values.astype(np.float32)
     y_train_np = y_train.values.astype(int)
 
+    # Настройка устройства для TabNet
+    if device.upper() == "GPU" and torch.cuda.is_available():
+        device_name = "cuda"
+    else:
+        device_name = "cpu"
+
     model = TabNetClassifier(
         n_d=64,  # Размерность представления
         n_a=64,  # Размерность внимания
@@ -254,7 +297,7 @@ def train_tabnet(X_train: pd.DataFrame, y_train: pd.Series,
         scheduler_params={"step_size": 50, "gamma": 0.9},
         scheduler_fn=torch.optim.lr_scheduler.StepLR,
         verbose=1,
-        device_name="cuda" if torch.cuda.is_available() else "cpu",
+        device_name=device_name,
     )
 
     if X_val is not None and y_val is not None:
@@ -283,7 +326,7 @@ def train_tabnet(X_train: pd.DataFrame, y_train: pd.Series,
 
 
 def train_mlp(X_train: pd.DataFrame, y_train: pd.Series,
-              X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None, use_gridsearch: bool = True) -> Pipeline:
+              X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None, use_gridsearch: bool = True, device: str = "GPU") -> Pipeline:
     """Обучение MLPClassifier внутри Pipeline со StandardScaler."""
     pipe = Pipeline([
         ("scaler", StandardScaler()),
@@ -339,7 +382,7 @@ def train_mlp(X_train: pd.DataFrame, y_train: pd.Series,
 
 
 def train_svm(X_train: pd.DataFrame, y_train: pd.Series,
-              X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None, use_gridsearch: bool = True) -> Pipeline:
+              X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None, use_gridsearch: bool = True, device: str = "GPU") -> Pipeline:
     """Обучение SVM с RBF ядром - классический мощный алгоритм."""
     from sklearn.svm import SVC
 
@@ -392,7 +435,7 @@ def train_svm(X_train: pd.DataFrame, y_train: pd.Series,
 
 
 def train_extra_trees(X_train: pd.DataFrame, y_train: pd.Series,
-                      X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None, use_gridsearch: bool = True):
+                      X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None, use_gridsearch: bool = True, device: str = "GPU"):
     """Обучение ExtraTreesClassifier - улучшенная версия Random Forest."""
     from sklearn.ensemble import ExtraTreesClassifier
 
@@ -447,7 +490,7 @@ def train_extra_trees(X_train: pd.DataFrame, y_train: pd.Series,
 
 
 def train_random_forest(X_train: pd.DataFrame, y_train: pd.Series,
-                        X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None) -> RandomForestClassifier:
+                        X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None, device: str = "GPU") -> RandomForestClassifier:
     """Простая модель RandomForest как baseline."""
     rf = RandomForestClassifier(
         n_estimators=500,  # Увеличиваем количество деревьев
@@ -463,7 +506,7 @@ def train_random_forest(X_train: pd.DataFrame, y_train: pd.Series,
 
 
 def train_extended_ensemble(X_train: pd.DataFrame, y_train: pd.Series,
-                            X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None):
+                            X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None, device: str = "GPU"):
     """Расширенный ансамбль из лучших моделей с использованием предобученных моделей."""
     from sklearn.ensemble import VotingClassifier
     import os
@@ -510,7 +553,7 @@ def train_extended_ensemble(X_train: pd.DataFrame, y_train: pd.Series,
 
 
 def train_voting_ensemble(X_train: pd.DataFrame, y_train: pd.Series,
-                          X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None):
+                          X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None, device: str = "GPU"):
     """Ансамбль из лучших моделей с использованием предобученных моделей."""
     from sklearn.ensemble import VotingClassifier
     import os
@@ -557,7 +600,7 @@ def train_voting_ensemble(X_train: pd.DataFrame, y_train: pd.Series,
 
 
 def train_stacking_ensemble(X_train: pd.DataFrame, y_train: pd.Series,
-                            X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None):
+                            X_val: Optional[pd.DataFrame] = None, y_val: Optional[pd.Series] = None, device: str = "GPU"):
     """Стекинг ансамбль с использованием предобученных моделей."""
     from sklearn.ensemble import StackingClassifier
     from sklearn.linear_model import LogisticRegression
@@ -656,7 +699,7 @@ class MLTrainer:
         os.makedirs(output_dir, exist_ok=True)
         self.output_dir = output_dir
 
-    def train(self, train_csv: str, val_csv: Optional[str] = None, models: List[str] = None):
+    def train(self, train_csv: str, val_csv: Optional[str] = None, models: List[str] = None, device: str = "GPU"):
         """
         Запускает обучение для указанных моделей.
 
@@ -664,6 +707,7 @@ class MLTrainer:
             train_csv (str): Путь к обучающему CSV.
             val_csv (Optional[str]): Путь к валидационному CSV (если None, используется KFold).
             models (List[str]): Список названий моделей для обучения.
+            device (str): Устройство для обучения ("GPU" или "CPU").
         """
         X_train, y_train, _ = load_dataset(train_csv)
 
@@ -683,7 +727,24 @@ class MLTrainer:
             logger.info(f"Обучение модели: {model_name}")
             trainer_func = MODEL_TRAINERS[model_name]
 
-            model = trainer_func(X_train, y_train, X_val, y_val)
+            # Передаем device в функцию обучения, если она его поддерживает
+            import inspect
+            sig = inspect.signature(trainer_func)
+
+            # Определяем, какие параметры поддерживает функция
+            if 'device' in sig.parameters:
+                if 'use_gridsearch' in sig.parameters:
+                    # Функции с GridSearch
+                    model = trainer_func(X_train, y_train, X_val, y_val, use_gridsearch=True, device=device)
+                else:
+                    # Функции без GridSearch (rf, ансамбли)
+                    model = trainer_func(X_train, y_train, X_val, y_val, device=device)
+            else:
+                # Для совместимости со старыми функциями без device
+                if 'use_gridsearch' in sig.parameters:
+                    model = trainer_func(X_train, y_train, X_val, y_val, use_gridsearch=True)
+                else:
+                    model = trainer_func(X_train, y_train, X_val, y_val)
 
             # TabNet требует специального сохранения
             if TabNetClassifier and isinstance(model, TabNetClassifier):

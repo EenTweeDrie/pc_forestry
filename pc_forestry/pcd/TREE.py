@@ -158,14 +158,13 @@ class TREE(PCD):
             .set_model(model_path)
         )
 
-        vg = mlp.fit(self)
+        vg = mlp.fit(self, device=self.device)
         trunk_voxels = [voxel for voxel in vg.voxels if voxel.label == 0]
         self.trunk = vg.get_pcd_by_voxels(trunk_voxels)
 
     def find_trunk_cluster(self, height_threshold: float = 3.0, intensity_cut: float = 5000) -> None:
         """ find the trunk cluster """
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(device)
+        device = self.device
 
         try:
             # Step 1: Filter points within the lower height_threshold meters of the cloud
