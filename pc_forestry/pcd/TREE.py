@@ -553,7 +553,7 @@ class TREE(PCD):
 
         # Кластеризация верхней части ствола по XY координатам для разделения на отдельные стволы
         xy_points = upper_trunk_points[:, :2]
-        clusterer = hdbscan.HDBSCAN(min_cluster_size=min_cluster_size, core_dist_n_jobs=-1)
+        clusterer = hdbscan.HDBSCAN(min_cluster_size=min_cluster_size, core_dist_n_jobs=1)
         labels = clusterer.fit_predict(xy_points)
 
         unique_labels = set(labels)
