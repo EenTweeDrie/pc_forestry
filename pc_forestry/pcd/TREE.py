@@ -158,7 +158,7 @@ class TREE(PCD):
             .set_model(model_path)
         )
 
-        vg = mlp.fit(self, device=self.device)
+        vg = mlp.fit(self)
         trunk_voxels = [voxel for voxel in vg.voxels if voxel.label == 0]
         self.trunk = vg.get_pcd_by_voxels(trunk_voxels)
 
