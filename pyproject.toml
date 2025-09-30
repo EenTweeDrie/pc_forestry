@@ -35,6 +35,9 @@ numba = "0.61.2"
 #### name = "pytorch"
 #### url = "https://download.pytorch.org/whl/cu121"
 #### secondary = true
+shapely = "^2.1.2"
+pyshp = "^2.3.1"
+scipy = "^1.11.0"
 
 [build-system]
 requires = ["poetry-core"]

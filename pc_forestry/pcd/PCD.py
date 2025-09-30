@@ -1,28 +1,23 @@
 import torch
 import numpy as np
-from time import time
 from ..utils import pypcd, fps
 import open3d as o3d
 import laspy
-import pyvista
 import h5py
 import pandas as pd
 import copy
-from tqdm import tqdm
-from loguru import logger
-from numba import njit, prange
-from .illuminance.illuminance import _create_voxel_grid_fast, _illuminance_kernel_numba
 from ..utils.timer import Timer
-from .features import (
+from .fields import (
     Points, Intensity, RGB, Normals, OriginalCloudIndex, GPSTime, Illuminance,
-    Feature, ScalarFeature, VectorFeature
+    Field, ScalarField, VectorField
 )
+from .is_inside import is_inside_sm_parallel, parallelpointinpolygon, ray_tracing_numpy_numba, is_inside_postgis_parallel
 
 
 class PCD:
-    def __init__(self, features=None, **kwargs):
-        if features is None:
-            self._features = {
+    def __init__(self, fields=None, **kwargs):
+        if fields is None:
+            self._fields = {
                 'points': Points(),
                 'intensity': Intensity(),
                 'rgb': RGB(),
@@ -32,35 +27,35 @@ class PCD:
                 'illuminance': Illuminance(),
             }
         else:
-            self._features = features
+            self._fields = fields
 
         # Populate data from kwargs
         for name, data in kwargs.items():
-            if name in self._features:
-                self._features[name].data = data
+            if name in self._fields:
+                self._fields[name].data = data
 
         self._create_properties()
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def _create_properties(self):
-        """Dynamically create properties for each feature."""
-        for name, feature in self._features.items():
-            # Create main property for the feature data
+        """Dynamically create properties for each field."""
+        for name, field in self._fields.items():
+            # Create main property for the field data
             setattr(PCD, name, property(
-                fget=lambda self, n=name: self._features[n].data,
-                fset=lambda self, value, n=name: setattr(self._features[n], 'data', value)
+                fget=lambda self, n=name: self._fields[n].data,
+                fset=lambda self, value, n=name: setattr(self._fields[n], 'data', value)
             ))
 
             # Create properties for vector components (e.g., x, y, z for points)
-            if isinstance(feature, VectorFeature):
-                for i, col_name in enumerate(feature.df_column_names):
+            if isinstance(field, VectorField):
+                for i, col_name in enumerate(field.df_column_names):
                     # Use a new variable in the lambda's scope
                     prop_name = col_name.lower()
                     if not hasattr(PCD, prop_name):
                         setattr(PCD, prop_name, property(
-                            fget=lambda self, n=name, idx=i: self._features[n].data[:, idx],
-                            fset=lambda self, value, n=name, idx=i: self._features[n].data.__setitem__(
+                            fget=lambda self, n=name, idx=i: self._fields[n].data[:, idx],
+                            fset=lambda self, value, n=name, idx=i: self._fields[n].data.__setitem__(
                                 (slice(None), idx), value)
                         ))
 
@@ -68,14 +63,14 @@ class PCD:
     def df(self) -> pd.DataFrame:
         """ merge all fields in DataFrame """
         df_data = {}
-        for feature in self._features.values():
-            if feature.size > 0:
-                if isinstance(feature, VectorFeature):
-                    if hasattr(feature.data, 'ndim') and feature.data.ndim > 1:
-                        for i, col_name in enumerate(feature.df_column_names):
-                            df_data[col_name] = feature.data[:, i]
+        for field in self._fields.values():
+            if field.size > 0:
+                if isinstance(field, VectorField):
+                    if hasattr(field.data, 'ndim') and field.data.ndim > 1:
+                        for i, col_name in enumerate(field.df_column_names):
+                            df_data[col_name] = field.data[:, i]
                 else:
-                    df_data[feature.name] = feature.data
+                    df_data[field.name] = field.data
         return pd.DataFrame(df_data)
 
     def save(self, file_path: str) -> None:
@@ -88,10 +83,10 @@ class PCD:
             pcd_fields = []
             pcd_data_list = []
 
-            for feature in self._features.values():
-                if feature.size > 0:
-                    pcd_fields.extend(feature.pcd_field_names)
-                    packed_data = feature.pack_pcd_data()
+            for field in self._fields.values():
+                if field.size > 0:
+                    pcd_fields.extend(field.pcd_field_names)
+                    packed_data = field.pack_pcd_data()
                     if packed_data.ndim == 1:
                         packed_data = packed_data.reshape(-1, 1)
                     pcd_data_list.append(packed_data)
@@ -119,15 +114,15 @@ class PCD:
                 header.point_count = len(self.points)
             las = laspy.LasData(header)
 
-            # Let each feature add its required dimensions to the header
-            for feature in self._features.values():
-                if feature.size > 0:
-                    feature.add_las_extra_dims(las)
+            # Let each field add its required dimensions to the header
+            for field in self._fields.values():
+                if field.size > 0:
+                    field.add_las_extra_dims(las)
 
-            # Let each feature pack its data into the las object
-            for feature in self._features.values():
-                if feature.size > 0:
-                    feature.pack_las_data(las)
+            # Let each field pack its data into the las object
+            for field in self._fields.values():
+                if field.size > 0:
+                    field.pack_las_data(las)
 
             las.write(file_path)
 
@@ -140,9 +135,9 @@ class PCD:
             df = self.df
             # Dynamically rename columns for txt format
             rename_map = {}
-            for feature in self._features.values():
-                if feature.size > 0:
-                    rename_map.update(feature.txt_column_map)
+            for field in self._fields.values():
+                if field.size > 0:
+                    rename_map.update(field.txt_column_map)
             df = df.rename(columns=rename_map)
 
             with open(file_path, 'w') as f:
@@ -152,9 +147,9 @@ class PCD:
         @Timer(f"Сохранение файла {file_path}")
         def save_h5(file_path):
             with h5py.File(file_path, 'w') as h5f:
-                for name, feature in self._features.items():
-                    if feature.size > 0:
-                        h5f.create_dataset(name, data=feature.data)
+                for name, field in self._fields.items():
+                    if field.size > 0:
+                        h5f.create_dataset(name, data=field.data)
 
         # Dispatch table
         savers = {
@@ -172,8 +167,8 @@ class PCD:
             print("invalid format")
 
     @classmethod
-    def read(cls, file_path: str, features=None) -> 'PCD':
-        instance = cls(features)
+    def read(cls, file_path: str, fields=None) -> 'PCD':
+        instance = cls(fields)
         instance.open(file_path,)
         return instance
 
@@ -186,16 +181,16 @@ class PCD:
             cloud_data = cloud.pc_data
             metadata_fields = cloud.get_metadata()["fields"]
 
-            for feature in self._features.values():
-                pcd_fields = feature.pcd_field_names
+            for field in self._fields.values():
+                pcd_fields = field.pcd_field_names
                 try:
-                    # Handle single field features (like rgb, intensity)
+                    # Handle single field fields (like rgb, intensity)
                     if len(pcd_fields) == 1 and pcd_fields[0] in metadata_fields:
-                        feature.unpack_pcd_data(cloud_data[pcd_fields[0]])
-                    # Handle multi-field features (like points, normals)
+                        field.unpack_pcd_data(cloud_data[pcd_fields[0]])
+                    # Handle multi-field fields (like points, normals)
                     elif all(f in metadata_fields for f in pcd_fields):
                         data_slice = np.array([cloud_data[f] for f in pcd_fields]).T
-                        feature.unpack_pcd_data(data_slice)
+                        field.unpack_pcd_data(data_slice)
 
                 except (ValueError, IndexError, KeyError):
                     pass  # Field not found
@@ -203,31 +198,31 @@ class PCD:
         @Timer(f"Открытие файла {file_path}")
         def open_h5(self, file_path):
             with h5py.File(file_path, 'r') as h5f:
-                for name, feature in self._features.items():
+                for name, field in self._fields.items():
                     if name in h5f:
-                        feature.data = np.asarray(h5f.get(name))
+                        field.data = np.asarray(h5f.get(name))
 
         @Timer(f"Открытие файла {file_path}")
         def open_las_laz(self, file_path):
             las = laspy.read(file_path)
-            for feature in self._features.values():
+            for field in self._fields.values():
                 try:
-                    # Uses the first (and likely only) attr from the feature
-                    attr_name, loader_func = next(iter(feature.las_attrs.items()))
-                    feature.data = loader_func(las)
+                    # Uses the first (and likely only) attr from the field
+                    attr_name, loader_func = next(iter(field.las_attrs.items()))
+                    field.data = loader_func(las)
                 except (AttributeError, IndexError, StopIteration):
                     pass  # Field not in las file
 
         @Timer(f"Открытие файла {file_path}")
         def open_csv(self, file_path):
             df = pd.read_csv(file_path)
-            for feature in self._features.values():
-                cols = feature.df_column_names
+            for field in self._fields.values():
+                cols = field.df_column_names
                 if all(c in df.columns for c in cols):
                     data = df[cols].values
-                    if isinstance(feature, ScalarFeature):
+                    if isinstance(field, ScalarField):
                         data = data.ravel()
-                    feature.data = data
+                    field.data = data
 
         @Timer(f"Открытие файла {file_path}")
         def open_txt(self, file_path):
@@ -253,27 +248,27 @@ class PCD:
             # "читать только уникальные".
             unique_header_map = {name: i for i, name in reversed(list(enumerate(header)))}
 
-            for feature in self._features.values():
-                # Отображение стандартных имен признаков на имена в заголовке txt
-                column_map = feature.txt_column_map  # например, {'nx': 'Nx', 'ny': 'Ny', 'nz': 'Nz'}
+            for field in self._fields.values():
+                # Отображение стандартных имен полей на имена в заголовке txt
+                column_map = field.txt_column_map  # например, {'nx': 'Nx', 'ny': 'Ny', 'nz': 'Nz'}
 
-                # Находим целочисленные индексы столбцов, необходимых для этого признака
+                # Находим целочисленные индексы столбцов, необходимых для этого поля
                 col_indices = []
-                for df_col in feature.df_column_names:
+                for df_col in field.df_column_names:
                     txt_col_name = column_map.get(df_col)
                     if txt_col_name and txt_col_name in unique_header_map:
                         col_indices.append(unique_header_map[txt_col_name])
 
                 if col_indices:
                     # Удаляем дубликаты индексов, сохраняя порядок, на случай, если
-                    # несколько столбцов признака отображаются на один и тот же
+                    # несколько столбцов поля отображаются на один и тот же
                     # исходный столбец в txt-файле.
                     unique_indices = list(dict.fromkeys(col_indices))
 
                     data = df.iloc[:, unique_indices].values
-                    if isinstance(feature, ScalarFeature):
+                    if isinstance(field, ScalarField):
                         data = data.ravel()
-                    feature.data = data
+                    field.data = data
 
         # Dispatch table for opening files
         openers = {
@@ -301,7 +296,7 @@ class PCD:
         # Сначала находим максимальную длину среди всех полей
         num_points = 0
         all_lengths = []
-        for f in self._features.values():
+        for f in self._fields.values():
             # Убедимся, что у данных есть размерность (не 0-d array) перед вызовом len()
             if hasattr(f.data, 'ndim') and f.data.ndim > 0:
                 all_lengths.append(len(f.data))
@@ -314,20 +309,20 @@ class PCD:
             return
 
         # Убедимся, что points инициализированы, если нужно
-        if self._features['points'].size == 0:
+        if self._fields['points'].size == 0:
             self.points = np.zeros((num_points, 3))
 
         # Теперь проходим по всем полям и дополняем те, что пусты
-        for name, feature in self._features.items():
-            if feature.size < num_points:
-                if isinstance(feature, VectorFeature):
-                    shape = (num_points, feature.num_columns)
-                else:  # ScalarFeature
+        for name, field in self._fields.items():
+            if field.size < num_points:
+                if isinstance(field, VectorField):
+                    shape = (num_points, field.num_columns)
+                else:  # ScalarField
                     shape = (num_points,)
 
                 # Используем тип данных по умолчанию или float32
-                dtype = feature.default_value.dtype
-                feature.data = np.zeros(shape, dtype=dtype)
+                dtype = field.default_value.dtype
+                field.data = np.zeros(shape, dtype=dtype)
 
     def clone(self) -> 'PCD':
         """ clone PCD object """
@@ -341,34 +336,34 @@ class PCD:
         points_torch = torch.Tensor(np_points).to(device)
         centroids = fps.farthest_point_sample(points_torch, num_sample).cpu().data.numpy()[0]
 
-        for name, feature in self._features.items():
-            if feature.size > 0:
-                feature.data = feature.data[centroids]
+        for name, field in self._fields.items():
+            if field.size > 0:
+                field.data = field.data[centroids]
 
     def index_cut(self, idx_labels: np.ndarray) -> None:
         """ cut points and all other fields using indexes """
-        for name, feature in self._features.items():
-            if feature.size > 0 and hasattr(feature.data, '__len__') and len(feature.data) > 0:
+        for name, field in self._fields.items():
+            if field.size > 0 and hasattr(field.data, '__len__') and len(field.data) > 0:
                 try:
-                    feature.data = feature.data[idx_labels]
+                    field.data = field.data[idx_labels]
                 except IndexError:
                     # This can happen if a field was not correctly sized.
                     # We create an empty array of the correct shape.
-                    shape = (len(idx_labels), feature.data.shape[1]) if feature.data.ndim > 1 else (len(idx_labels),)
-                    feature.data = np.empty(shape)
+                    shape = (len(idx_labels), field.data.shape[1]) if field.data.ndim > 1 else (len(idx_labels),)
+                    field.data = np.empty(shape)
 
-    def compute_feature(self, name: str, **kwargs):
+    def compute_field(self, name: str, **kwargs):
         """
-        Вычисляет данные для указанного признака.
+        Вычисляет данные для указанного поля.
 
-        :param name: Имя признака для вычисления (например, 'normals', 'illuminance').
-        :param kwargs: Дополнительные аргументы, передаваемые в метод compute() признака.
+        :param name: Имя поля для вычисления (например, 'normals', 'illuminance').
+        :param kwargs: Дополнительные аргументы, передаваемые в метод compute() поля.
         """
-        if name in self._features:
-            feature = self._features[name]
-            feature.compute(self, **kwargs)
+        if name in self._fields:
+            field = self._fields[name]
+            field.compute(self, **kwargs)
         else:
-            raise ValueError(f"Feature '{name}' not found in PCD object.")
+            raise ValueError(f"Field '{name}' not found in PCD object.")
 
     def append(self, other: 'PCD') -> None:
         """ append PCD object """
@@ -384,24 +379,24 @@ class PCD:
 
         # If one cloud is empty, just copy the other
         if num_points_self == 0:
-            self._features = copy.deepcopy(other._features)
+            self._fields = copy.deepcopy(other._fields)
             self._create_properties()
             return
         if num_points_other == 0:
             return
 
-        for name, self_feature in self._features.items():
-            other_feature = other._features.get(name)
-            if other_feature is not None and other_feature.size > 0:
-                # Ensure self_feature has data to concatenate with
-                if self_feature.size == 0 and num_points_self > 0:
+        for name, self_field in self._fields.items():
+            other_field = other._fields.get(name)
+            if other_field is not None and other_field.size > 0:
+                # Ensure self_field has data to concatenate with
+                if self_field.size == 0 and num_points_self > 0:
                     # Initialize with default-like empty data of the correct length
-                    if isinstance(self_feature, VectorFeature):
-                        self_feature.data = np.zeros((num_points_self, self_feature.num_columns))
+                    if isinstance(self_field, VectorField):
+                        self_field.data = np.zeros((num_points_self, self_field.num_columns))
                     else:
-                        self_feature.data = np.zeros(num_points_self)
+                        self_field.data = np.zeros(num_points_self)
 
-                self_feature.data = np.concatenate((self_feature.data, other_feature.data), axis=0)
+                self_field.data = np.concatenate((self_field.data, other_field.data), axis=0)
         self._create_properties()
 
     def show(self, color_field: str = 'intensity') -> None:
@@ -413,8 +408,8 @@ class PCD:
             colors = np.asarray(self.rgb)
             colors = colors / 255.0  # normalize RGB values
             pcd.colors = o3d.utility.Vector3dVector(colors)
-        elif color_field in self._features and self._features[color_field].size > 0:
-            field_values = np.asarray(self._features[color_field].data)
+        elif color_field in self._fields and self._fields[color_field].size > 0:
+            field_values = np.asarray(self._fields[color_field].data)
             field_values = (field_values - field_values.min()) / \
                 (field_values.max() - field_values.min())
             colors = np.zeros((field_values.shape[0], 3))
@@ -439,8 +434,8 @@ class PCD:
                     return (array - min_val) / (max_val - min_val)
             return array
 
-        for name, feature in self._features.items():
-            feature.data = normalize(feature.data)
+        for name, field in self._fields.items():
+            field.data = normalize(field.data)
         self.nan_to_zero()
 
     def shift_to_origin(self) -> None:
@@ -453,10 +448,24 @@ class PCD:
         if self.points.size > 0:
             self.points -= self.points.min(axis=0)
 
+    def shift_with_vector(self, shift_vector: np.ndarray) -> None:
+        """ shift points by shift_vector """
+        self.points = self.points - shift_vector
+        if hasattr(self, 'shift'):
+            self.shift += shift_vector
+        else:
+            self.shift = shift_vector
+
+    def calculate_auto_shift_vector(self) -> np.ndarray:
+        """ calculate auto shift vector for centering points cloud near zero """
+        centroid = np.mean(self.points, axis=0)
+        shift_vector = -centroid
+        return shift_vector
+
     def nan_to_zero(self) -> None:
         """ replace NaN to 0 in all fields """
-        for name, feature in self._features.items():
-            feature.data = np.nan_to_num(feature.data)
+        for name, field in self._fields.items():
+            field.data = np.nan_to_num(field.data)
 
     @Timer("Визуализация PCD как gif")
     def visual_gif(self, path_gif: str, zoom: float = 0.4, point_size: float = 4.0, color_field: str = 'rgb') -> None:
@@ -494,8 +503,8 @@ class PCD:
             # Если rgb, используем как есть, но нормализуем
             colors = np.asarray(self.rgb)
             colors = colors / 255.0  # нормализация RGB
-        elif color_field in self._features and self._features[color_field].size > 0:
-            field_values = np.asarray(self._features[color_field].data)
+        elif color_field in self._fields and self._fields[color_field].size > 0:
+            field_values = np.asarray(self._fields[color_field].data)
             # Нормализация в [0, 1]
             field_values = (field_values - field_values.min()) / \
                 (field_values.max() - field_values.min() + 1e-8)
@@ -522,3 +531,24 @@ class PCD:
         pl.open_gif(path_gif)
         pl.orbit_on_path(path, write_frames=True)
         pl.close()
+
+    def poly_cut(self, polygon, algo='cm_parallel') -> 'PCD':
+        idx_labels = np.where((self.points[:, 0] > min(polygon[:, 0])) & (self.points[:, 0] < max(polygon[:, 0])) &
+                              (self.points[:, 1] > min(polygon[:, 1])) & (self.points[:, 1] < max(polygon[:, 1])))
+        pc_part = self.clone()
+        pc_part.index_cut(idx_labels)
+
+        if algo == 'cm_parallel':
+            idx_labels = is_inside_sm_parallel(pc_part.points, polygon)
+
+        if algo == 'inpoly_parallel':
+            idx_labels = parallelpointinpolygon(pc_part.points, polygon)
+
+        if algo == 'ray_tracing':
+            idx_labels = ray_tracing_numpy_numba(pc_part.points, polygon)
+
+        if algo == 'postgis_parallel':
+            idx_labels = is_inside_postgis_parallel(pc_part.points, polygon)
+
+        pc_part.index_cut(idx_labels)
+        return pc_part

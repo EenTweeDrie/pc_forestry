@@ -10,8 +10,8 @@ import laspy
 from ..utils.timer import Timer
 
 
-class Feature(ABC):
-    """Абстрактный базовый класс для признака облака точек."""
+class Field(ABC):
+    """Абстрактный базовый класс для поля облака точек."""
 
     def __init__(self, data=None):
         self._data = self.initialize_data(data)
@@ -19,13 +19,13 @@ class Feature(ABC):
     @property
     @abstractmethod
     def name(self) -> str:
-        """Имя признака (например, 'points', 'intensity')."""
+        """Имя поля (например, 'points', 'intensity')."""
         pass
 
     @property
     @abstractmethod
     def default_value(self) -> np.ndarray:
-        """Значение по умолчанию для данных признака."""
+        """Значение по умолчанию для данных поля."""
         pass
 
     def initialize_data(self, data):
@@ -51,7 +51,7 @@ class Feature(ABC):
         return self.data.size
 
     def compute(self, pcd, **kwargs):
-        """Вычисляет данные для признака. Базовая реализация ничего не делает."""
+        """Вычисляет данные для поля. Базовая реализация ничего не делает."""
         pass
 
     # --- Format-specific handlers ---
@@ -82,8 +82,8 @@ class Feature(ABC):
 
     def add_las_extra_dims(self, las):
         """Добавляет необходимые Extra Dimensions в заголовок LAS."""
-        # Fallback for simple scalar features
-        if isinstance(self, ScalarFeature) and self.name not in ['intensity', 'gps_time']:
+        # Fallback for simple scalar fields
+        if isinstance(self, ScalarField) and self.name not in ['intensity', 'gps_time']:
             try:
                 las.add_extra_dim(laspy.ExtraBytesParams(name=self.name, type=np.float32))
             except Exception:  # Already exists
@@ -91,13 +91,13 @@ class Feature(ABC):
 
     def pack_las_data(self, las):
         """Упаковывает данные в объект laspy.LasData."""
-        # Fallback for attributes with the same name as the feature
+        # Fallback for attributes with the same name as the field
         if hasattr(las, self.name):
             setattr(las, self.name, self.data)
 
 
-class ScalarFeature(Feature):
-    """Базовый класс для скалярных признаков (1 значение на точку)."""
+class ScalarField(Field):
+    """Базовый класс для скалярных полей (1 значение на точку)."""
 
     @property
     def default_value(self) -> np.ndarray:
@@ -107,8 +107,8 @@ class ScalarFeature(Feature):
         self.data = np.nan_to_num(np.asarray(pcd_data).ravel())
 
 
-class VectorFeature(Feature):
-    """Базовый класс для векторных признаков (N значений на точку)."""
+class VectorField(Field):
+    """Базовый класс для векторных полей (N значений на точку)."""
 
     def __init__(self, data=None, num_columns: int = 3):
         self.num_columns = num_columns
@@ -119,9 +119,9 @@ class VectorFeature(Feature):
         return np.empty((0, self.num_columns))
 
 
-# --- Конкретные классы признаков ---
+# --- Конкретные классы полей ---
 
-class Points(VectorFeature):
+class Points(VectorField):
     @property
     def name(self) -> str: return 'points'
 
@@ -152,7 +152,7 @@ class Points(VectorFeature):
         las.z = self.data[:, 2]
 
 
-class Intensity(ScalarFeature):
+class Intensity(ScalarField):
     @property
     def name(self) -> str: return 'intensity'
 
@@ -160,7 +160,7 @@ class Intensity(ScalarFeature):
     def txt_column_map(self): return {'intensity': 'Intensity'}
 
 
-class RGB(VectorFeature):
+class RGB(VectorField):
     @property
     def name(self) -> str: return 'rgb'
 
@@ -194,7 +194,7 @@ class RGB(VectorFeature):
         las.colors = (self.data.astype(np.uint16) * 256)
 
 
-class Normals(VectorFeature):
+class Normals(VectorField):
     @property
     def name(self) -> str: return 'normals'
 
@@ -236,7 +236,7 @@ class Normals(VectorFeature):
         self.data = np.asarray(o3d_pcd.normals)
 
 
-class OriginalCloudIndex(ScalarFeature):
+class OriginalCloudIndex(ScalarField):
     @property
     def name(self) -> str: return 'original_cloud_index'
 
@@ -251,7 +251,7 @@ class OriginalCloudIndex(ScalarFeature):
     def txt_column_map(self): return {'original_cloud_index': 'Original_cloud_index'}
 
 
-class GPSTime(ScalarFeature):
+class GPSTime(ScalarField):
     @property
     def name(self) -> str: return 'gps_time'
 
@@ -262,7 +262,7 @@ class GPSTime(ScalarFeature):
     def txt_column_map(self): return {'gps_time': 'GpsTime'}
 
 
-class Illuminance(ScalarFeature):
+class Illuminance(ScalarField):
     @property
     def name(self) -> str: return 'illuminance'
 

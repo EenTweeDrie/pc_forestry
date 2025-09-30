@@ -66,12 +66,12 @@ class MLInferencer:
 
         # Вычисляем нормали с параметрами если заданы
         normals_params = feature_params.get('normals', {})
-        pc.compute_feature('normals', **normals_params)
+        pc.compute_field('normals', **normals_params)
 
         # Вычисляем освещенность с параметрами если заданы
         if pc.illuminance is None or np.all(pc.illuminance == 0):
             illuminance_params = feature_params.get('illuminance', {})
-            pc.compute_feature('illuminance', **illuminance_params)
+            pc.compute_field('illuminance', **illuminance_params)
 
         vg = VOXELGRID.create(pc, voxel_size, verbose=False)
 

@@ -1,5 +1,6 @@
 import os
 import glob
+from typing import Iterable
 
 
 class EnabledFileTypes:
@@ -7,6 +8,7 @@ class EnabledFileTypes:
     PCD = 'pcd'
     TXT = 'txt'
     LAZ = 'laz'
+    STL = 'stl'
 
 
 class PathManager:
@@ -18,10 +20,27 @@ class PathManager:
         os.makedirs(self._base_dir, exist_ok=True)
         return self
 
-    def get_dataset_dir(self, type) -> str:
+    def _ensure_base_dir(self) -> str:
         assert self._base_dir, "Базовая директория не установлена"
-        path = os.path.join(self._base_dir, type)
+        return self._base_dir
+
+    def resolve(self, *relative_parts: str) -> str:
+        base_dir = self._ensure_base_dir()
+        return os.path.join(base_dir, *relative_parts)
+
+    def ensure_dir(self, *relative_parts: str) -> str:
+        path = self.resolve(*relative_parts)
         os.makedirs(path, exist_ok=True)
+        return path
+
+    def ensure_directories(self, relative_parts: Iterable[str]) -> list[str]:
+        return [self.ensure_dir(part) for part in relative_parts]
+
+    def resolve_file(self, relative_path: str) -> str:
+        return self.resolve(relative_path)
+
+    def get_dataset_dir(self, type) -> str:
+        path = self.ensure_dir(type)
         return path
 
     def get_individual_dataset_dir(self, type) -> str:
@@ -42,6 +61,45 @@ class PathManager:
 
     def get_prepared_files_dir(self, type: str) -> str:
         path = os.path.join(self.get_dataset_dir(type), 'prepared')
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    def get_area_file_path(self, area_name: str) -> str:
+        path = os.path.join(self._base_dir, f'{area_name}')
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        return path
+
+    def get_cut_area_file_path(self, area_name: str) -> str:
+        path = os.path.join(self._base_dir, f'cut_{area_name}')
+        return path
+
+    def get_mesh_file_path(self, mesh_name: str = 'mesh.stl') -> str:
+        """Возвращает путь к файлу mesh'а."""
+        path = os.path.join(self._base_dir, mesh_name)
+        return path
+
+    def get_intensity_dir(self, intensity_cut: int) -> str:
+        path = os.path.join(self._base_dir, 'int' + str(intensity_cut))
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    def get_cells_dir(self, intensity_cut: int) -> str:
+        path = os.path.join(self.get_intensity_dir(intensity_cut), 'cells')
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    def get_cells_borders_dir(self, intensity_cut: int) -> str:
+        path = os.path.join(self.get_cells_dir(intensity_cut), 'borders')
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    def get_cells_data_dir(self, intensity_cut: int) -> str:
+        path = os.path.join(self.get_cells_dir(intensity_cut), 'data')
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    def get_stumps_dir(self, intensity_cut: int) -> str:
+        path = os.path.join(self.get_cells_dir(intensity_cut), 'stumps')
         os.makedirs(path, exist_ok=True)
         return path
 

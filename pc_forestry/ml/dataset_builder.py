@@ -28,11 +28,11 @@ class DatasetBuilder:
 
         # Вычисляем нормали с параметрами если заданы
         normals_params = feature_params.get('normals', {})
-        pc.compute_feature('normals', **normals_params)
+        pc.compute_field('normals', **normals_params)
 
         # Вычисляем освещенность с параметрами если заданы
         illuminance_params = feature_params.get('illuminance', {})
-        pc.compute_feature('illuminance', **illuminance_params)
+        pc.compute_field('illuminance', **illuminance_params)
 
         return pc
 
@@ -59,7 +59,7 @@ class DatasetBuilder:
         with Timer(f"Обработка файла {os.path.basename(file_path)}"):
             pc = TREE.read(file_path)
             pc.shift_to_coordinate()
-            pc.compute_feature('normals')
+            pc.compute_field('normals')
             vg = VOXELGRID.create(pc, voxel_size, verbose=False)
             vg.calculate_distances_to_previous_layer(pc.coordinate)
             vg.calculate_distances_to_coordinate(pc.coordinate)
