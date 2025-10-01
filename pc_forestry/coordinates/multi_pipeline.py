@@ -57,6 +57,7 @@ class MultiCoordinatesPipeline:
         self.params: Dict[str, Any] = {}
         self.mesh_name: str | None = None
         self.path_manager = PathManager().set_base_dir(base_path)
+        self.stumps_df = None
 
     def set_params(self, params: Dict[str, Any]) -> "MultiCoordinatesPipeline":
         """Устанавливает базовые параметры для всех пайплайнов."""
@@ -249,3 +250,4 @@ class MultiCoordinatesPipeline:
         save_pth = os.path.join(self.base_path, save_pth)
         df_result.to_csv(save_pth, index=False, sep=';')
         print(f"Результаты с метками сохранены в: {save_pth}")
+        self.stumps_df = df_result
