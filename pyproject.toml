@@ -31,6 +31,8 @@ numba = "0.61.2"
 shapely = "^2.1.2"
 pyshp = "^2.3.1"
 scipy = "^1.11.0"
+scikit-image = "^0.25.2"
+connected-components-3d = "^3.25.0"
 
 [[tool.poetry.source]]
 name = "pytorch"

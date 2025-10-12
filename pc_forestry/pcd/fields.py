@@ -290,9 +290,9 @@ class Illuminance(ScalarField):
                 normal_est_radius = max_ray_distance / 2
 
             # Check for normals and compute if necessary
-            if 'normals' not in pcd._features or pcd.normals.shape[0] != num_points or force_normal_recalculation:
+            if 'normals' not in pcd._fields or pcd.normals.shape[0] != num_points or force_normal_recalculation:
                 logger.debug("Estimating normals for illuminance calculation.")
-                pcd._features['normals'].compute(pcd, radius=normal_est_radius, max_nn=normal_est_max_nn)
+                pcd._fields['normals'].compute(pcd, radius=normal_est_radius, max_nn=normal_est_max_nn)
 
             points = pcd.points.astype(np.float32)
             normals = pcd.normals.astype(np.float32)

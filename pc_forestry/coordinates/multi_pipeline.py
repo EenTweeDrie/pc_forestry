@@ -156,7 +156,7 @@ class MultiCoordinatesPipeline:
         return df if df is not None else pd.DataFrame()
 
     @staticmethod
-    def _merge_step(df1: pd.DataFrame, df2: pd.DataFrame, iter_val: int, new_cols: list, old_cols: list) -> pd.DataFrame:
+    def _merge_step(df1: pd.DataFrame, df2: pd.DataFrame, iter_val: int, new_cols: list) -> pd.DataFrame:
         """Шаг слияния двух DataFrame."""
         eps = 0.25
 
@@ -250,4 +250,3 @@ class MultiCoordinatesPipeline:
         save_pth = os.path.join(self.base_path, save_pth)
         df_result.to_csv(save_pth, index=False, sep=';')
         print(f"Результаты с метками сохранены в: {save_pth}")
-        self.stumps_df = df_result

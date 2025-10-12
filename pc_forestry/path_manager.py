@@ -78,28 +78,23 @@ class PathManager:
         path = os.path.join(self._base_dir, mesh_name)
         return path
 
-    def get_intensity_dir(self, intensity_cut: int) -> str:
-        path = os.path.join(self._base_dir, 'int' + str(intensity_cut))
+    def get_cells_dir(self) -> str:
+        path = os.path.join(self._base_dir, 'cells')
         os.makedirs(path, exist_ok=True)
         return path
 
-    def get_cells_dir(self, intensity_cut: int) -> str:
-        path = os.path.join(self.get_intensity_dir(intensity_cut), 'cells')
+    def get_cells_borders_dir(self) -> str:
+        path = os.path.join(self.get_cells_dir(), 'borders')
         os.makedirs(path, exist_ok=True)
         return path
 
-    def get_cells_borders_dir(self, intensity_cut: int) -> str:
-        path = os.path.join(self.get_cells_dir(intensity_cut), 'borders')
+    def get_cells_data_dir(self) -> str:
+        path = os.path.join(self.get_cells_dir(), 'data')
         os.makedirs(path, exist_ok=True)
         return path
 
-    def get_cells_data_dir(self, intensity_cut: int) -> str:
-        path = os.path.join(self.get_cells_dir(intensity_cut), 'data')
-        os.makedirs(path, exist_ok=True)
-        return path
-
-    def get_stumps_dir(self, intensity_cut: int) -> str:
-        path = os.path.join(self.get_cells_dir(intensity_cut), 'stumps')
+    def get_stumps_dir(self, intensity_cut) -> str:
+        path = os.path.join(self._base_dir, str(intensity_cut) + 'stumps')
         os.makedirs(path, exist_ok=True)
         return path
 

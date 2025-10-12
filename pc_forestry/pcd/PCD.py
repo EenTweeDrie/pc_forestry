@@ -399,19 +399,39 @@ class PCD:
                 self_field.data = np.concatenate((self_field.data, other_field.data), axis=0)
         self._create_properties()
 
-    def show(self, color_field: str = 'intensity') -> None:
+    def show(self, color_field: str = 'intensity', labels=None) -> None:
         """ show PCD object """
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(self.points)
 
-        if color_field == 'rgb' and self.rgb.size > 0:
+        if labels is not None:
+            labels = np.asarray(labels)
+            unique_labels, inverse_indices = np.unique(labels, return_inverse=True)
+
+            num_unique_labels = len(unique_labels)
+            # Генерируем случайные цвета для каждого уникального кластера
+            colors_for_labels = np.random.rand(num_unique_labels, 3)
+
+            # Обрабатываем точки шума (метка -1), окрашивая их в серый цвет
+            noise_label_index = np.where(unique_labels == -1)[0]
+            if len(noise_label_index) > 0:
+                colors_for_labels[noise_label_index[0]] = [0.5, 0.5, 0.5]
+
+            # Сопоставляем цвета обратно исходным точкам, используя инверсные индексы
+            colors = colors_for_labels[inverse_indices]
+            pcd.colors = o3d.utility.Vector3dVector(colors)
+        elif color_field == 'rgb' and self.rgb.size > 0:
             colors = np.asarray(self.rgb)
             colors = colors / 255.0  # normalize RGB values
             pcd.colors = o3d.utility.Vector3dVector(colors)
         elif color_field in self._fields and self._fields[color_field].size > 0:
             field_values = np.asarray(self._fields[color_field].data)
-            field_values = (field_values - field_values.min()) / \
-                (field_values.max() - field_values.min())
+            range_val = field_values.max() - field_values.min()
+            if range_val > 1e-9:
+                field_values = (field_values - field_values.min()) / range_val
+            else:
+                field_values = np.zeros_like(field_values)
+
             colors = np.zeros((field_values.shape[0], 3))
             colors[:, 0] = field_values  # r
             colors[:, 1] = field_values  # g

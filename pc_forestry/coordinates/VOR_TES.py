@@ -13,12 +13,20 @@ from .utils import voronoi_finite_polygons_2d
 class VOR_TES():
     """ Clustering with Voronoi Tesselations """
 
-    def __init__(self, pc, algo='birch', n_clusters=8):
+    def __init__(self, pc, algo='birch', n_clusters=8, percent=90):
         self.n_clusters = n_clusters
 
-        self.pts = pc.points[:, 0:2]
         self.pc = pc
 
+        intensity_cut_vor_tes = np.percentile(self.pc.intensity, percent)
+        print(intensity_cut_vor_tes)
+        print(self.pc.points.shape)
+
+        pc_cut = pc.clone()
+        idx_labels = np.where(pc_cut.intensity >= intensity_cut_vor_tes)
+        pc_cut.index_cut(idx_labels)
+
+        self.pts = pc_cut.points[:, 0:2]
         if algo == 'birch':
             self.algo = cluster.Birch(n_clusters=n_clusters)
         elif algo == 'spectral':
@@ -27,8 +35,7 @@ class VOR_TES():
             self.algo = cluster.KMeans(n_clusters=n_clusters)
         else:
             raise Exception("There is no such algorithm. Choose from existing: 'birch', 'spectral', 'kmeans'")
-
-        print(f'Starting clustering via {algo} algorithm ...')
+        print(self.pts.shape)
         self.algo.fit(self.pts)
 
     def plot_cluster_voronoi(self):
