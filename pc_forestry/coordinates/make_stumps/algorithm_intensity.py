@@ -189,7 +189,6 @@ def process_stump_cluster(pc_stump, counter, params, path_manager, mesh_adapter:
                 # Обновляем счетчик для следующего потенциального пня в этой же ячейке
                 counter = stump_data['counter']
 
-    print(cc, ca, h)
     # idx_label = np.where(xy_clusters == ch)
     # pc_stump.index_cut(idx_label)
     # pc_stump.show()
@@ -260,9 +259,9 @@ def process_final_stump(pc_stump_clear, counter, params, path_manager, mesh_adap
 
     # Сохранение файла пня
     counter += 1
-    run_id = params.get('run_id')
-    filename_stumps_out = f'{run_id}_{str(counter).rjust(4, "0")}.pcd'
-    stumps_dir = path_manager.get_stumps_dir(run_id)
+    stumps_id = params.get('stumps_id')
+    filename_stumps_out = f'{stumps_id}_{str(counter).rjust(4, "0")}.pcd'
+    stumps_dir = path_manager.get_stumps_dir(stumps_id)
     os.makedirs(stumps_dir, exist_ok=True)
     fname_stumps_out = os.path.join(stumps_dir, filename_stumps_out)
     pc_stump_suitable.save(fname_stumps_out)

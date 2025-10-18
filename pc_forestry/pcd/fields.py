@@ -225,14 +225,14 @@ class Normals(VectorField):
         las.nz = self.data[:, 2]
 
     def compute(self, pcd, radius: float = 0.1, max_nn: int = 30):
-        with Timer("estimate normals"):
-            if len(pcd.points) == 0:
-                return
+        # with Timer("estimate normals"):
+        if len(pcd.points) == 0:
+            return
 
-            o3d_pcd = o3d.geometry.PointCloud()
-            o3d_pcd.points = o3d.utility.Vector3dVector(pcd.points)
-            o3d_pcd.estimate_normals(
-                search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=radius, max_nn=max_nn))
+        o3d_pcd = o3d.geometry.PointCloud()
+        o3d_pcd.points = o3d.utility.Vector3dVector(pcd.points)
+        o3d_pcd.estimate_normals(
+            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=radius, max_nn=max_nn))
         self.data = np.asarray(o3d_pcd.normals)
 
 
@@ -281,31 +281,31 @@ class Illuminance(ScalarField):
                 normal_est_max_nn: int = 30,
                 force_normal_recalculation: bool = False):
 
-        with Timer("compute illuminance"):
-            num_points = len(pcd.points)
-            if num_points == 0:
-                return
+        # with Timer("compute illuminance"):
+        num_points = len(pcd.points)
+        if num_points == 0:
+            return
 
-            if normal_est_radius is None:
-                normal_est_radius = max_ray_distance / 2
+        if normal_est_radius is None:
+            normal_est_radius = max_ray_distance / 2
 
-            # Check for normals and compute if necessary
-            if 'normals' not in pcd._fields or pcd.normals.shape[0] != num_points or force_normal_recalculation:
-                logger.debug("Estimating normals for illuminance calculation.")
-                pcd._fields['normals'].compute(pcd, radius=normal_est_radius, max_nn=normal_est_max_nn)
+        # Check for normals and compute if necessary
+        if 'normals' not in pcd._fields or pcd.normals.shape[0] != num_points or force_normal_recalculation:
+            logger.debug("Estimating normals for illuminance calculation.")
+            pcd._fields['normals'].compute(pcd, radius=normal_est_radius, max_nn=normal_est_max_nn)
 
-            points = pcd.points.astype(np.float32)
-            normals = pcd.normals.astype(np.float32)
+        points = pcd.points.astype(np.float32)
+        normals = pcd.normals.astype(np.float32)
 
-            grid_cell_size = ao_neighbor_radius
-            point_indices_sorted, cell_starts_ends, min_bound, grid_dims = _create_voxel_grid_fast(
-                points, grid_cell_size)
+        grid_cell_size = ao_neighbor_radius
+        point_indices_sorted, cell_starts_ends, min_bound, grid_dims = _create_voxel_grid_fast(
+            points, grid_cell_size)
 
-            num_steps = 10
+        num_steps = 10
 
-            illuminance = _illuminance_kernel_numba(
-                points, normals, num_rays, max_ray_distance, ao_neighbor_radius, num_steps,
-                point_indices_sorted, cell_starts_ends, min_bound, grid_dims, grid_cell_size
-            )
+        illuminance = _illuminance_kernel_numba(
+            points, normals, num_rays, max_ray_distance, ao_neighbor_radius, num_steps,
+            point_indices_sorted, cell_starts_ends, min_bound, grid_dims, grid_cell_size
+        )
 
         self.data = illuminance

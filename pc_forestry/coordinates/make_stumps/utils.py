@@ -103,9 +103,13 @@ def save_stumps_results(TN, TCX, TCY, TD, params, path_manager):
     TCY = np.asarray(TCY)
     TD = np.asarray(TD)
 
-    # Определяем идентификатор алгоритма для имен файлов и колонок
+    # Определяем идентификатор для имен файлов и колонок
+    # Приоритет: явный stumps_id -> далее по алгоритму
     algo_id = params.get('stump_algorithm', 'intensity')
-    if algo_id == 'intensity':
+    stumps_id = params.get('stumps_id')
+    if stumps_id is not None:
+        id_val = stumps_id
+    elif algo_id == 'intensity':
         id_val = params.get('intensity_cut', 'default')
     else:
         id_val = algo_id

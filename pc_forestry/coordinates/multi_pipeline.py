@@ -50,18 +50,29 @@ class MultiCoordinatesPipeline:
     и последующего объединения и обработки результатов.
     """
 
-    def __init__(self, base_path: str, file_name: str, intensity_cuts: list[int]) -> None:
+    def __init__(self, base_path: str, file_name: str) -> None:
         self.base_path = base_path
         self.file_name = file_name
-        self.intensity_cuts = intensity_cuts
         self.params: Dict[str, Any] = {}
         self.mesh_name: str | None = None
         self.path_manager = PathManager().set_base_dir(base_path)
         self.stumps_df = None
+        # Новый режим: список конфигов
+        self.param_sets: list[Dict[str, Any]] | None = None
+        # Маппинг stumps_id -> priority
+        self.stumps_priority_map: Dict[str, int] = {}
 
     def set_params(self, params: Dict[str, Any]) -> "MultiCoordinatesPipeline":
         """Устанавливает базовые параметры для всех пайплайнов."""
         self.params = dict(params)
+        return self
+
+    def set_param_sets(self, param_sets: list[Dict[str, Any]]) -> "MultiCoordinatesPipeline":
+        """Устанавливает список конфигов для последовательных запусков.
+        Если задан, режим intensity_cuts игнорируется.
+        """
+        # Клонируем, чтобы не модифицировать входные структуры
+        self.param_sets = [dict(p) for p in param_sets]
         return self
 
     def set_mesh(self, mesh_name: str) -> "MultiCoordinatesPipeline":
@@ -71,15 +82,25 @@ class MultiCoordinatesPipeline:
 
     def run(self, force_cut: bool = True, force_cells: bool = True, force_stumps: bool = True) -> None:
         """
-        Запускает полный процесс обработки для всех указанных intensity_cuts,
-        включая запуск отдельных пайплайнов, объединение и очистку результатов.
+        Запускает полный процесс обработки:
+        - либо по self.param_sets (если задано),
+        - либо по self.intensity_cuts (обратная совместимость).
         """
-        print(f"Запуск обработки для intensity_cuts: {self.intensity_cuts}")
         stumps_csv_paths = []
-        for intensity in self.intensity_cuts:
-            print(f"\n--- Обработка для intensity_cut = {intensity} ---")
-            current_params = self.params.copy()
-            current_params['intensity_cut'] = intensity
+
+        print(f"Запуск обработки для набора конфигов: {len(self.param_sets)} шт.")
+        for idx, cfg in enumerate(self.param_sets):
+            current_params = dict(self.params)
+            current_params.update(cfg)
+            # Генерируем stumps_id, если не задан явно: ключевые параметры, влияющие на результат
+            if 'stumps_id' not in current_params:
+                import uuid
+                current_params['stumps_id'] = str(uuid.uuid4())[:7]
+
+            stumps_id = current_params['stumps_id']
+            # Сохраняем приоритет (по умолчанию используем порядок определения)
+            self.stumps_priority_map[stumps_id] = int(cfg.get('priority', idx))
+            print(f"\n--- Обработка конфига #{idx+1}: stumps_id={stumps_id} ---")
 
             cp = CoordinatesPipeline(self.base_path, self.file_name).set_params(current_params)
 
@@ -87,12 +108,12 @@ class MultiCoordinatesPipeline:
                 cp.set_mesh(self.mesh_name)
                 cp.cut_mesh_data(force=force_cut)
             else:
-                # Предполагаем, что если меш не задан, используется cut_slice_data
-                cp.cut_slice_data()
+                # Если меш не задан, предполагается другой способ нарезки (в проекте отключён)
+                raise Exception("Mesh adapter обязателен для текущего режима")
 
             cp.make_cells(force=force_cells).make_stumps(force=force_stumps)
 
-            stumps_csv_path = os.path.join(self.path_manager.get_stumps_dir(intensity), f'stumps_{intensity}.csv')
+            stumps_csv_path = os.path.join(self.path_manager.get_stumps_dir(stumps_id), f'stumps_{stumps_id}.csv')
             stumps_csv_paths.append(stumps_csv_path)
 
         # Создаем coordinates_paths.txt для объединения
@@ -109,6 +130,68 @@ class MultiCoordinatesPipeline:
         print("\n--- Запуск очистки лишних пней ---")
         self._clear_excess_stumps()
         print("Очистка завершена.")
+
+        print("\n--- Выбор пней по приоритету ---")
+        self._select_stumps_by_priority()
+        print("Выбор по приоритету завершён.")
+
+    def filter_selected_by_labels(self, n_labels: int) -> None:
+        """
+        Фильтрует файлы в selected_stumps на основе количества положительных меток.
+        Читает файл *_Clear_Excess.csv, находит столбцы Labels_*, и если сумма единиц
+        в строке больше n_labels, копирует соответствующий файл из selected_stumps в
+        новую папку selected_stumps_filtered.
+
+        Соответствие строки и имени файла берётся из selected_stumps/selection_summary.csv
+        по полю row -> row{row_idx:05d}_... .
+        """
+        clear_csv_path = os.path.join(self.base_path, self.file_name.partition('.')[0] + "_Clear_Excess.csv")
+        if not os.path.exists(clear_csv_path):
+            print(f"Файл с метками не найден: {clear_csv_path}")
+            return
+
+        df = pd.read_csv(clear_csv_path, delimiter=';')
+        label_columns = [c for c in df.columns if c.startswith('Labels_')]
+        if not label_columns:
+            print("В таблице нет столбцов Labels_*")
+            return
+
+        summary_csv = os.path.join(self.base_path, 'selected_stumps', 'selection_summary.csv')
+        if not os.path.exists(summary_csv):
+            print(f"Не найдена сводка выбранных файлов: {summary_csv}")
+            return
+
+        summary = pd.read_csv(summary_csv, delimiter=';')
+        # Быстрый доступ: row -> copied_as
+        row_to_copied = {int(r['row']): r['copied_as'] for _, r in summary.iterrows()}
+
+        src_dir = os.path.join(self.base_path, 'selected_stumps')
+        dst_dir = os.path.join(self.base_path, 'selected_stumps_filtered')
+        os.makedirs(dst_dir, exist_ok=True)
+
+        copied = 0
+        for row_idx in range(df.shape[0]):
+            row_vals = df.loc[row_idx, label_columns]
+            # Считаем единицы (Trunk == 1)
+            try:
+                ones = int((row_vals == 1).sum())
+            except Exception:
+                # На случай строковых типов
+                ones = sum(1 for v in row_vals.values if str(v) == '1')
+
+            if ones > n_labels:
+                copied_name = row_to_copied.get(row_idx)
+                if not copied_name:
+                    continue
+                src_path = os.path.join(src_dir, copied_name)
+                dst_path = os.path.join(dst_dir, copied_name)
+                try:
+                    shutil.copy2(src_path, dst_path)
+                    copied += 1
+                except FileNotFoundError:
+                    print(f"Не найден файл для копирования: {src_path}")
+
+        print(f"Отфильтровано и скопировано файлов: {copied}")
 
     def _merge_coordinates(self) -> None:
         """Объединяет файлы с координатами пней."""
@@ -130,9 +213,7 @@ class MultiCoordinatesPipeline:
         array = []
 
         for i, file_path in enumerate(paths):
-            print('3', file_path)
             splt_fn = os.path.basename(file_path).split('_')[-1].split('.')[0]
-            print('1', splt_fn)
 
             current_df = pd.read_csv(file_path, delimiter=";")
 
@@ -143,7 +224,6 @@ class MultiCoordinatesPipeline:
                 continue
 
             iter_count += 1
-            prev_names_col = names_col.copy()
             names_col.insert(iter_count, "Name_stump_" + splt_fn)
             names_col.insert(len(names_col) - 1, "Diameter_" + splt_fn)
 
@@ -151,7 +231,7 @@ class MultiCoordinatesPipeline:
             file2 = current_df
             file2.columns = ["Name_stump_" + splt_fn, "X", "Y", "Diameter_" + splt_fn]
 
-            df = self._merge_step(file1, file2, iter_count, names_col, prev_names_col)
+            df = self._merge_step(file1, file2, iter_count, names_col)
 
         return df if df is not None else pd.DataFrame()
 
@@ -204,25 +284,24 @@ class MultiCoordinatesPipeline:
         merged_csv_path = os.path.join(self.base_path, self.file_name.partition('.')[0] + "_Coordinates_Merged.csv")
         df = pd.read_csv(merged_csv_path, delimiter=";")
 
-        n = len(self.intensity_cuts)
+        # Число наборов = по количеству стобцов Name_stump_*
+        name_columns = [col for col in df.columns if col.startswith('Name_stump_')]
+        n = len(name_columns)
         path_merged_stumps = os.path.join(self.base_path, "merged_stumps")
         os.makedirs(path_merged_stumps, exist_ok=True)
-
-        # Колонки с именами файлов пней (например, Name_stump_7000)
-        name_columns = [col for col in df.columns if col.startswith('Name_stump_')]
 
         initial_labels = np.full((df.shape[0], 1), -1, dtype=int)
         new_label_cols = []
 
-        for i in tqdm(range(n), desc="Processing intensity levels"):
+        for i in tqdm(range(n), desc="Processing stumps sets"):
             col_name = name_columns[i]
-            intensity = self.intensity_cuts[i]
+            stumps_id = col_name.replace('Name_stump_', '')
             labels = []
 
-            new_label_cols.append("Labels_" + str(intensity))
-            path_int = self.path_manager.get_stumps_dir(intensity)
+            new_label_cols.append("Labels_" + str(stumps_id))
+            path_int = self.path_manager.get_stumps_dir(stumps_id)
 
-            for j in tqdm(range(df.shape[0]), desc=f"Predicting for int={intensity}", leave=False):
+            for j in tqdm(range(df.shape[0]), desc=f"Predicting for id={stumps_id}", leave=False):
                 value = df.at[j, col_name]
                 if pd.notna(value) and value != "File__Not__Found":
                     path_file = os.path.join(path_int, value)
@@ -250,3 +329,74 @@ class MultiCoordinatesPipeline:
         save_pth = os.path.join(self.base_path, save_pth)
         df_result.to_csv(save_pth, index=False, sep=';')
         print(f"Результаты с метками сохранены в: {save_pth}")
+
+    def _select_stumps_by_priority(self) -> None:
+        """
+        Выбирает из объединённой таблицы по каждой строке один файл пня на основе
+        приоритета конфигураций и копирует в папку selected_stumps.
+
+        Приоритет берётся из self.stumps_priority_map. Если приоритет не задан,
+        используется порядок следования колонок в CSV.
+        """
+        merged_csv_path = os.path.join(self.base_path, self.file_name.partition('.')[0] + "_Coordinates_Merged.csv")
+        df = pd.read_csv(merged_csv_path, delimiter=';')
+
+        name_columns = [col for col in df.columns if col.startswith('Name_stump_')]
+        if not name_columns:
+            print("Нет колонок Name_stump_ для выбора по приоритету.")
+            return
+
+        # Подготовка порядка выбора по приоритетам
+        stumps_ids = [col.replace('Name_stump_', '') for col in name_columns]
+        # Словарь колонка -> (priority, original_index)
+        priority_pairs = {}
+        for idx, sid in enumerate(stumps_ids):
+            priority_pairs[sid] = (self.stumps_priority_map.get(sid, 10**6), idx)
+
+        # Сортировка: меньший priority выше, при равенстве — по порядку колонок
+        sorted_ids = sorted(stumps_ids, key=lambda sid: (priority_pairs[sid][0], priority_pairs[sid][1]))
+
+        # Карта id -> column name для быстрого доступа
+        id_to_col = {sid: f"Name_stump_{sid}" for sid in stumps_ids}
+
+        source_dir = os.path.join(self.base_path, 'merged_stumps')
+        target_dir = os.path.join(self.base_path, 'selected_stumps')
+        os.makedirs(target_dir, exist_ok=True)
+
+        selections = []
+        for row_idx in range(df.shape[0]):
+            chosen_sid = None
+            chosen_name = None
+            for sid in sorted_ids:
+                col = id_to_col[sid]
+                value = df.at[row_idx, col] if col in df.columns else None
+                if pd.isna(value) or value == "File__Not__Found":
+                    continue
+                chosen_sid = sid
+                chosen_name = str(value)
+                break
+
+            if chosen_sid is None or chosen_name is None:
+                continue
+
+            src_path = os.path.join(source_dir, chosen_name)
+            # Уникализируем имя файла по индексу строки, чтобы избежать коллизий
+            base, ext = os.path.splitext(chosen_name)
+            dst_name = f"row{row_idx:05d}_{base}{ext}"
+            dst_path = os.path.join(target_dir, dst_name)
+            try:
+                shutil.copy2(src_path, dst_path)
+                selections.append({
+                    'row': row_idx,
+                    'stumps_id': chosen_sid,
+                    'file': chosen_name,
+                    'copied_as': dst_name,
+                })
+            except FileNotFoundError:
+                print(f"Не найден исходный файл для копирования: {src_path}")
+
+        # Сохраняем сводку выбора
+        if selections:
+            summary_csv = os.path.join(self.base_path, 'selected_stumps', 'selection_summary.csv')
+            pd.DataFrame(selections).to_csv(summary_csv, index=False, sep=';')
+            print(f"Сводка выбора сохранена: {summary_csv}")

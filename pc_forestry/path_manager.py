@@ -94,7 +94,7 @@ class PathManager:
         return path
 
     def get_stumps_dir(self, intensity_cut) -> str:
-        path = os.path.join(self._base_dir, str(intensity_cut) + 'stumps')
+        path = os.path.join(self._base_dir, str(intensity_cut) + '_stumps')
         os.makedirs(path, exist_ok=True)
         return path
 

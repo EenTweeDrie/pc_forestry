@@ -149,20 +149,11 @@ class CoordinatesPipeline:
         """
         algo = self.params.get('stump_algorithm', 'intensity')
 
-        # Определяем идентификатор для проверки существования папки
-        if algo == 'intensity':
-            id_val = self.params.get('intensity_cut', 'default')
-            process_function = process_cell_file
-            print("Выбран алгоритм поиска пней по интенсивности.")
-        elif algo == 'rgb':
-            id_val = 'rgb'
-            process_function = process_cell_file_rgb
-            print("Выбран алгоритм поиска пней по цвету (RGB).")
-        else:
-            raise ValueError(f"Неизвестный алгоритм для поиска пней: {algo}. Доступные варианты: 'intensity', 'rgb'.")
+        stumps_id = self.params.get('stumps_id')
+        process_function = process_cell_file
 
-        if not force and os.path.exists(self.path_manager.get_stumps_dir(id_val)) and os.listdir(self.path_manager.get_stumps_dir(id_val)):
-            print(f"Папка с результатами для '{id_val}' уже существует. Пропускаю шаг.")
+        if not force and os.path.exists(self.path_manager.get_stumps_dir(stumps_id)) and os.listdir(self.path_manager.get_stumps_dir(stumps_id)):
+            print(f"Папка с результатами для '{stumps_id}' уже существует. Пропускаю шаг.")
             return self
 
         path_file_cells = self.path_manager.get_cells_data_dir()
