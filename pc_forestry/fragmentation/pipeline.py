@@ -300,7 +300,17 @@ class FragmentationPipeline:
 
         return self
 
-    def split_trees(self, version: str) -> "FragmentationPipeline":
+    def split_trees(
+        self,
+        version: str,
+        model_path: str,
+        config: dict = {
+            'voxel_size': 0.3,
+            'type_df': 'original',
+            'fast_mode': True,
+            'proba_threshold': 0.4
+        }
+    ) -> "FragmentationPipeline":
 
         os.makedirs(os.path.join(self.base_path, 'out'), exist_ok=True)
 
@@ -310,8 +320,8 @@ class FragmentationPipeline:
                 continue
             pc = TREE.read(full_path)
             pc.find_trunk_ml(
-                model_path=r'D:\lidar\data\classification\v3\models\catboost_model.pkl',
-                config={'voxel_size': 0.3, 'type_df': 'original', 'fast_mode': True, 'proba_threshold': 0.4},
+                model_path=model_path,
+                config=config,
             )
 
             # Загрузите XY-координаты деревьев для этого кластера (если есть)
@@ -340,7 +350,7 @@ class FragmentationPipeline:
 
         return self
 
-    def run(self,) -> "FragmentationPipeline":
+    def run(self, model_path: str, config: dict) -> "FragmentationPipeline":
         logger.info(f"Running run for {self.file_name}")
         self.coordinates(version='v1')
         self.choose_segments(version='v1')
@@ -348,5 +358,5 @@ class FragmentationPipeline:
         self.merge_clusters(version='v2')
         self.coordinates(version='v2')
         self.choose_segments(version='v2')
-        self.split_trees(version='v2')
+        self.split_trees(version='v2', model_path=model_path, config=config)
         return self
