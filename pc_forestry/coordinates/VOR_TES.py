@@ -83,6 +83,27 @@ class VOR_TES():
                 polygon = vertices[region]
                 label = self.algo.labels_[indice]
                 poly = Polygon(polygon)
+                # Попытка исправить геометрию: сначала make_valid (если доступен), затем buffer(0)
+                try:
+                    try:
+                        # Shapely >= 2.0
+                        import shapely  # type: ignore
+                        poly = shapely.make_valid(poly)  # type: ignore
+                    except Exception:
+                        from shapely.validation import make_valid  # type: ignore
+                        poly = make_valid(poly)  # type: ignore
+                except Exception:
+                    # Fallback: классическая починка самопересечений
+                    try:
+                        poly = poly.buffer(0)
+                    except Exception:
+                        pass
+
+                # Пропускаем пустые геометрии
+                if poly.is_empty:
+                    indice += 1
+                    pbar.update(1)
+                    continue
                 for i in range(self.n_clusters):
                     if label == i:
                         mp[i].append(poly)
@@ -93,7 +114,42 @@ class VOR_TES():
         print(f'Starting saving borders in .csv files ...')
 
         for i in tqdm(range(self.n_clusters)):
-            multi_poly = unary_union(mp[i])
+            # Фильтруем только валидные и непустые геометрии
+            polys = [p for p in mp[i] if (not p.is_empty)]
+            if not polys:
+                continue
+
+            # Попытка объединить полигоны с защитой от TopologyException
+            try:
+                multi_poly = unary_union(polys)
+            except Exception:
+                try:
+                    buffered = [p.buffer(0) for p in polys]
+                    multi_poly = unary_union(buffered)
+                except Exception:
+                    # Последний шанс: итеративное объединение
+                    acc = polys[0]
+                    for p in polys[1:]:
+                        try:
+                            acc = acc.union(p)
+                        except Exception:
+                            # пробуем через buffer(0)
+                            try:
+                                acc = acc.buffer(0).union(p.buffer(0))
+                            except Exception:
+                                pass
+                    multi_poly = acc
+
+            # Если получили GeometryCollection, извлечём только полигоны
+            if multi_poly.geom_type == 'GeometryCollection':
+                geoms = [g for g in multi_poly.geoms if g.geom_type in ('Polygon', 'MultiPolygon')]
+                if not geoms:
+                    continue
+                try:
+                    multi_poly = unary_union(geoms)
+                except Exception:
+                    # Fallback: взять первый валидный
+                    multi_poly = geoms[0]
 
             shp_ply = Polygon(shp_poly)
             cut_poly = multi_poly.intersection(shp_ply)

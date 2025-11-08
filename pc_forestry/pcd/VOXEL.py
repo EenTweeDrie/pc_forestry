@@ -86,29 +86,6 @@ class VOXEL(PCD):
             self.original_cloud_index.shape, label)
         self._label = label
 
-    def add_point(self,
-                  point,
-                  intensity=None,
-                  rgb=None,
-                  original_cloud_index=None,
-                  gps_time=None,
-                  illuminance=None,
-                  normals=None):
-        self.points = np.append(self.points, [point], axis=0)
-        if intensity is not None:
-            self.intensity = np.append(self.intensity, intensity)
-        if rgb is not None:
-            self.rgb = np.append(self.rgb, [rgb], axis=0)
-        if original_cloud_index is not None:
-            self.original_cloud_index = np.append(
-                self.original_cloud_index, original_cloud_index)
-        if gps_time is not None:
-            self.gps_time = np.append(self.gps_time, gps_time)
-        if illuminance is not None:
-            self.illuminance = np.append(self.illuminance, illuminance)
-        if normals is not None:
-            self.normals = np.append(self.normals, [normals], axis=0)
-
     def calculate_center(self, voxel_size):
         return (np.array(self.index) + 0.5) * voxel_size
 
@@ -136,33 +113,54 @@ class VOXELGRID:
         self.voxels = voxels
 
     @classmethod
-    def create(cls, PC: PCD, voxel_size: float, verbose: bool = False):
+    def create(cls, PC: PCD, voxel_size: float, verbose: bool = True):
         voxel_indices = np.floor(PC.points / voxel_size).astype(np.int32)
-        voxel_dict = defaultdict(VOXEL)
 
+        # Находим уникальные индексы вокселей по строкам и обратное отображение
+        unique_indices, inverse, counts = np.unique(
+            voxel_indices, axis=0, return_inverse=True, return_counts=True
+        )
+
+        # Группируем индексы точек по вокселям без булевых масок
+        order = np.argsort(inverse, kind='mergesort')
+        splits = np.cumsum(counts)[:-1]
+        groups = np.split(order, splits)
+
+        voxels = []
+
+        has_intensity = PC.intensity.size > 0
+        has_rgb = PC.rgb.size > 0
+        has_oci = PC.original_cloud_index.size > 0
+        has_gps = PC.gps_time.size > 0
+        has_illum = PC.illuminance.size > 0
+        has_normals = PC.normals.size > 0
+
+        iterator = range(len(groups))
         if verbose:
-            iterator = tqdm(enumerate(zip(PC.points, voxel_indices)), total=len(
-                PC.points), desc="Creating voxel grid")
-        else:
-            iterator = enumerate(zip(PC.points, voxel_indices))
+            iterator = tqdm(iterator, desc="Creating voxel grid (batched)")
 
-        for i, (point, index) in iterator:
-            index_tuple = tuple(index)
-            if index_tuple not in voxel_dict:
-                voxel_dict[index_tuple] = VOXEL(index_tuple)
-            voxel_dict[index_tuple].add_point(
-                point,
-                PC.intensity[i] if PC.intensity.size > 0 else None,
-                PC.rgb[i] if PC.rgb.size > 0 else None,
-                PC.original_cloud_index[i] if PC.original_cloud_index.size > 0 else None,
-                PC.gps_time[i] if PC.gps_time.size > 0 else None,
-                PC.illuminance[i] if PC.illuminance.size > 0 else None,
-                PC.normals[i] if PC.normals.size > 0 else None
-            )
+        for i in iterator:
+            idx_tuple = tuple(int(v) for v in unique_indices[i])
+            sel = groups[i]
+
+            voxel = VOXEL(idx_tuple)
+            voxel.points = PC.points[sel]
+            if has_intensity:
+                voxel.intensity = PC.intensity[sel]
+            if has_rgb:
+                voxel.rgb = PC.rgb[sel]
+            if has_oci:
+                voxel.original_cloud_index = PC.original_cloud_index[sel]
+            if has_gps:
+                voxel.gps_time = PC.gps_time[sel]
+            if has_illum:
+                voxel.illuminance = PC.illuminance[sel]
+            if has_normals:
+                voxel.normals = PC.normals[sel]
+            voxels.append(voxel)
 
         instance = cls(PC, voxel_size)
-        instance.voxels = list(voxel_dict.values())
-
+        instance.voxels = voxels
         return instance
 
     def __getitem__(self, index: int) -> VOXEL:

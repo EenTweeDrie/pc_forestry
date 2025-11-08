@@ -16,6 +16,7 @@ class LCC:
         self.labels_ = None
         self.voxel_grid_ = None
         self.voxel_labels_map_ = None
+        self._voxel_offset_ = None  # смещение для нормализованных индексов
 
     def fit(self, points):
         self._label_connected_components_with_voxels(points)
@@ -34,22 +35,48 @@ class LCC:
         return voxel_indices
 
     def _encode_voxels_to_cc3d_format(self, voxel_indices):
-        x_max = np.max(voxel_indices[:, 0])
-        y_max = np.max(voxel_indices[:, 1])
-        z_max = np.max(voxel_indices[:, 2])
+        # Нормализуем индексы так, чтобы минимум по каждой оси стал 0
+        mins = np.min(voxel_indices, axis=0)
+        norm_indices = (voxel_indices - mins).astype(np.int64)
 
-        labels = np.zeros((x_max+1, y_max+1, z_max+1))
+        # Размеры компактного объема
+        x_max = int(np.max(norm_indices[:, 0]))
+        y_max = int(np.max(norm_indices[:, 1]))
+        z_max = int(np.max(norm_indices[:, 2]))
 
-        for x, y, z in voxel_indices:
-            labels[x, y, z] = 1
+        shape = (x_max + 1, y_max + 1, z_max + 1)
+
+        # Ограничение на размер аллокации (например, до ~500 млн ячеек)
+        max_cells = 500_000_000
+        total_cells = int(shape[0]) * int(shape[1]) * int(shape[2])
+        if total_cells > max_cells:
+            raise MemoryError(
+                f"Voxel grid too large: shape={shape}, cells={total_cells} > {max_cells}. "
+                f"Увеличьте voxel_size или заранее ограничьте область."
+            )
+
+        # Используем bool для экономии памяти
+        labels = np.zeros(shape, dtype=np.bool_)
+
+        for x, y, z in norm_indices:
+            labels[x, y, z] = True
+
+        # Сохраняем смещение для последующей декодировки
+        self._voxel_offset_ = mins.astype(np.int64)
 
         return labels
 
     def _decode_cc3d_to_voxels_with_class_labels(self, cc3d_input, voxel_indices):
         class_labels = np.zeros(voxel_indices.shape[0], dtype=np.int32)
 
+        if self._voxel_offset_ is None:
+            offset = np.array([0, 0, 0], dtype=np.int64)
+        else:
+            offset = self._voxel_offset_
+
         for i, xyz in enumerate(voxel_indices):
-            class_labels[i] = cc3d_input[xyz[0], xyz[1], xyz[2]]
+            xi, yi, zi = (xyz - offset).astype(np.int64)
+            class_labels[i] = cc3d_input[xi, yi, zi]
         return class_labels
 
     def _label_connected_components_with_voxels(self, pcd_points):

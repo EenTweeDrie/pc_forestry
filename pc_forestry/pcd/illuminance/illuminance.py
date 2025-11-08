@@ -5,9 +5,15 @@ from numba import njit, prange
 
 def _create_voxel_grid_fast(points: np.ndarray, grid_cell_size: float):
     """
-    Создает воксельную сетку для быстрого поиска соседей, используя
-    векторизованные операции NumPy. Это значительно быстрее, чем подход
-    с использованием Python-словарей и циклов.
+    Создает разреженное представление воксельной сетки для быстрого поиска соседей.
+
+    Возвращает:
+      - point_indices_sorted (int32): индексы точек, отсортированные по хэшам ячеек
+      - unique_hashes (int64): уникальные хэши занятых ячеек (отсортированы)
+      - starts (int32): начальные индексы срезов в point_indices_sorted для каждой ячейки
+      - ends (int32): конечные индексы (excl.) срезов для каждой ячейки
+      - min_bound (float32): минимальная граница сетки
+      - grid_dims (int32): размеры сетки по осям (используется для пересчета хэша)
     """
     num_points = points.shape[0]
     if num_points == 0:
@@ -22,7 +28,6 @@ def _create_voxel_grid_fast(points: np.ndarray, grid_cell_size: float):
 
     grid_dims = np.ceil((max_bound - min_bound) /
                         grid_cell_size).astype(np.int64)
-    num_cells = np.prod(grid_dims)
 
     # 2. Векторизованно вычисляем хэш ячейки для КАЖДОЙ точки
     #    Это заменяет медленный Python-цикл.
@@ -32,7 +37,7 @@ def _create_voxel_grid_fast(points: np.ndarray, grid_cell_size: float):
     # Формула для получения уникального ID (хэша) для каждой 3D-ячейки
     cell_hashes = (point_to_cell_idx[:, 0] * grid_dims[1] * grid_dims[2] +
                    point_to_cell_idx[:, 1] * grid_dims[2] +
-                   point_to_cell_idx[:, 2])
+                   point_to_cell_idx[:, 2]).astype(np.int64)
 
     # 3. Сортируем точки по хэшу их ячеек.
     #    `np.argsort` возвращает индексы, которые бы отсортировали массив.
@@ -50,22 +55,20 @@ def _create_voxel_grid_fast(points: np.ndarray, grid_cell_size: float):
     #    `np.unique` с `return_index=True` очень эффективно находит
     #    первое вхождение каждого уникального хэша в отсортированном массиве.
     unique_hashes, first_indices = np.unique(sorted_hashes, return_index=True)
+    starts = first_indices.astype(np.int32)
+    ends = np.empty_like(starts)
+    if starts.size > 0:
+        ends[:-1] = starts[1:]
+        ends[-1] = np.int32(num_points)
 
-    # 5. Создаем таблицу для быстрого доступа `cell_starts_ends`.
-    #    Она будет содержать начало и конец среза в `point_indices_sorted` для каждой ячейки.
-    cell_starts_ends = np.zeros((num_cells, 2), dtype=np.int32)
-
-    # Для всех ячеек, в которых есть точки...
-    # ...записываем, где начинается их блок.
-    cell_starts_ends[unique_hashes, 0] = first_indices.astype(np.int32)
-
-    # Конец блока для одной ячейки - это начало блока для следующей.
-    # Поэтому мы можем "сдвинуть" массив `first_indices` и добавить в конец
-    # общее число точек.
-    end_indices = np.append(first_indices[1:], num_points).astype(np.int32)
-    cell_starts_ends[unique_hashes, 1] = end_indices
-
-    return point_indices_sorted, cell_starts_ends, min_bound.astype(np.float32), grid_dims.astype(np.int32)
+    return (
+        point_indices_sorted,
+        unique_hashes.astype(np.int64),
+        starts,
+        ends,
+        min_bound.astype(np.float32),
+        grid_dims.astype(np.int32),
+    )
 
 
 @njit(parallel=True, fastmath=True)
@@ -77,7 +80,9 @@ def _illuminance_kernel_numba(
     ao_neighbor_radius,
     num_steps,
     point_indices_sorted,
-    cell_starts_ends,
+    unique_hashes,
+    starts,
+    ends,
     min_bound,
     grid_dims,
     grid_cell_size
@@ -128,12 +133,22 @@ def _illuminance_kernel_numba(
                                 check_coords[1] >= 0 and check_coords[1] < grid_dims[1] and
                                     check_coords[2] >= 0 and check_coords[2] < grid_dims[2]):
 
-                                # Хэш ячейки для доступа к данным
-                                cell_hash = check_coords[0] * grid_dims[1] * grid_dims[2] + \
-                                    check_coords[1] * grid_dims[2] + \
-                                    check_coords[2]
+                                # Хэш ячейки для доступа к данным (int64)
+                                cell_hash = (
+                                    check_coords[0] * grid_dims[1] * grid_dims[2]
+                                    + check_coords[1] * grid_dims[2]
+                                    + check_coords[2]
+                                )
 
-                                start, end = cell_starts_ends[cell_hash]
+                                # Поиск ячейки в разреженном списке уникальных хэшей
+                                pos = np.searchsorted(unique_hashes, np.int64(cell_hash))
+                                if pos < unique_hashes.shape[0] and unique_hashes[pos] == np.int64(cell_hash):
+                                    start = starts[pos]
+                                    end = ends[pos]
+                                else:
+                                    start = 0
+                                    end = 0
+
                                 for pt_idx_in_sorted_array in range(start, end):
                                     # Индекс точки в исходном массиве `points`
                                     j = point_indices_sorted[pt_idx_in_sorted_array]

@@ -251,6 +251,33 @@ class OriginalCloudIndex(ScalarField):
     def txt_column_map(self): return {'original_cloud_index': 'Original_cloud_index'}
 
 
+class TreeID(ScalarField):
+    @property
+    def name(self) -> str: return 'tree_id'
+
+    @property
+    def default_value(self) -> np.ndarray:
+        return np.empty(0, dtype=np.int32)
+
+    @property
+    def pcd_field_names(self): return ['Tree_ID']
+
+    @property
+    def txt_column_map(self): return {'tree_id': 'Tree_ID'}
+
+    @property
+    def las_attrs(self):
+        # Поддерживаем несколько вариантов названий измерения в LAS/LAZ
+        def _loader(l):
+            for attr in ('tree_id', 'Tree_ID', 'TreeID', 'treeID', 'TreeId'):
+                if hasattr(l, attr):
+                    return np.asarray(getattr(l, attr)).astype(np.int32)
+            # Если не нашли ни один вариант — пробросим исключение,
+            # чтобы вызывающий код попробовал другие маппинги (если есть)
+            raise AttributeError("TreeID attribute not found in LAS/LAZ")
+        return {'tree_id': _loader}
+
+
 class GPSTime(ScalarField):
     @property
     def name(self) -> str: return 'gps_time'
@@ -274,38 +301,55 @@ class Illuminance(ScalarField):
 
     def compute(self,
                 pcd,
-                num_rays: int = 32,
+                num_rays: int = 8,
                 max_ray_distance: float = 0.5,
                 ao_neighbor_radius: float = 0.02,
                 normal_est_radius: float = None,
                 normal_est_max_nn: int = 30,
                 force_normal_recalculation: bool = False):
 
-        # with Timer("compute illuminance"):
-        num_points = len(pcd.points)
-        if num_points == 0:
-            return
+        with Timer("compute illuminance"):
+            num_points = len(pcd.points)
+            if num_points == 0:
+                return
 
-        if normal_est_radius is None:
-            normal_est_radius = max_ray_distance / 2
+            if normal_est_radius is None:
+                normal_est_radius = max_ray_distance / 2
 
-        # Check for normals and compute if necessary
-        if 'normals' not in pcd._fields or pcd.normals.shape[0] != num_points or force_normal_recalculation:
-            logger.debug("Estimating normals for illuminance calculation.")
-            pcd._fields['normals'].compute(pcd, radius=normal_est_radius, max_nn=normal_est_max_nn)
+            # Check for normals and compute if necessary
+            if 'normals' not in pcd._fields or pcd.normals.shape[0] != num_points or force_normal_recalculation:
+                logger.debug("Estimating normals for illuminance calculation.")
+                pcd._fields['normals'].compute(pcd, radius=normal_est_radius, max_nn=normal_est_max_nn)
 
-        points = pcd.points.astype(np.float32)
-        normals = pcd.normals.astype(np.float32)
+            points = pcd.points.astype(np.float32)
+            normals = pcd.normals.astype(np.float32)
 
-        grid_cell_size = ao_neighbor_radius
-        point_indices_sorted, cell_starts_ends, min_bound, grid_dims = _create_voxel_grid_fast(
-            points, grid_cell_size)
+            grid_cell_size = ao_neighbor_radius
+            (
+                point_indices_sorted,
+                unique_hashes,
+                starts,
+                ends,
+                min_bound,
+                grid_dims,
+            ) = _create_voxel_grid_fast(points, grid_cell_size)
 
-        num_steps = 10
+            num_steps = 10
 
-        illuminance = _illuminance_kernel_numba(
-            points, normals, num_rays, max_ray_distance, ao_neighbor_radius, num_steps,
-            point_indices_sorted, cell_starts_ends, min_bound, grid_dims, grid_cell_size
-        )
+            illuminance = _illuminance_kernel_numba(
+                points,
+                normals,
+                num_rays,
+                max_ray_distance,
+                ao_neighbor_radius,
+                num_steps,
+                point_indices_sorted,
+                unique_hashes,
+                starts,
+                ends,
+                min_bound,
+                grid_dims,
+                grid_cell_size,
+            )
 
-        self.data = illuminance
+            self.data = illuminance

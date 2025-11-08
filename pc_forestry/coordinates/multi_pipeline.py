@@ -50,11 +50,12 @@ class MultiCoordinatesPipeline:
     и последующего объединения и обработки результатов.
     """
 
-    def __init__(self, base_path: str, file_name: str) -> None:
+    def __init__(self, base_path: str, file_path: str) -> None:
         self.base_path = base_path
-        self.file_name = file_name
+        self.file_path = file_path
+        self.file_name = os.path.basename(file_path)
         self.params: Dict[str, Any] = {}
-        self.mesh_name: str | None = None
+        self.mesh_path: str | None = None
         self.path_manager = PathManager().set_base_dir(base_path)
         self.stumps_df = None
         # Новый режим: список конфигов
@@ -75,9 +76,9 @@ class MultiCoordinatesPipeline:
         self.param_sets = [dict(p) for p in param_sets]
         return self
 
-    def set_mesh(self, mesh_name: str) -> "MultiCoordinatesPipeline":
-        """Устанавливает имя файла меша."""
-        self.mesh_name = mesh_name
+    def set_mesh(self, mesh_path: str) -> "MultiCoordinatesPipeline":
+        """Устанавливает путь к файлу меша."""
+        self.mesh_path = mesh_path
         return self
 
     def run(self, force_cut: bool = True, force_cells: bool = True, force_stumps: bool = True) -> None:
@@ -102,10 +103,10 @@ class MultiCoordinatesPipeline:
             self.stumps_priority_map[stumps_id] = int(cfg.get('priority', idx))
             print(f"\n--- Обработка конфига #{idx+1}: stumps_id={stumps_id} ---")
 
-            cp = CoordinatesPipeline(self.base_path, self.file_name).set_params(current_params)
+            cp = CoordinatesPipeline(self.base_path, self.file_path).set_params(current_params)
 
-            if self.mesh_name:
-                cp.set_mesh(self.mesh_name)
+            if self.mesh_path:
+                cp.set_mesh(self.mesh_path)
                 cp.cut_mesh_data(force=force_cut)
             else:
                 # Если меш не задан, предполагается другой способ нарезки (в проекте отключён)

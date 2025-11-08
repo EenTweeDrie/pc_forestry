@@ -73,11 +73,6 @@ class PathManager:
         path = os.path.join(self._base_dir, f'cut_{area_name}')
         return path
 
-    def get_mesh_file_path(self, mesh_name: str = 'mesh.stl') -> str:
-        """Возвращает путь к файлу mesh'а."""
-        path = os.path.join(self._base_dir, mesh_name)
-        return path
-
     def get_cells_dir(self) -> str:
         path = os.path.join(self._base_dir, 'cells')
         os.makedirs(path, exist_ok=True)

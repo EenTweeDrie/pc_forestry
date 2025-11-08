@@ -13,11 +13,12 @@ from .make_stumps.algorithm_rgb import process_cell_file_rgb
 
 
 class CoordinatesPipeline:
-    def __init__(self, base_path: str, file_name: str) -> None:
+    def __init__(self, base_path: str, file_path: str) -> None:
         self.params: Dict[str, Any] = {}
         self.base_path = base_path
         self.path_manager = PathManager().set_base_dir(base_path)
-        self.file_name = file_name
+        self.file_path = file_path
+        self.file_name = os.path.basename(file_path)
         self.mesh_adapter: Optional[MeshAdapter] = None
 
     def set_params(self, params: Dict[str, Any]) -> "CoordinatesPipeline":
@@ -28,14 +29,13 @@ class CoordinatesPipeline:
         self.params.update(params)
         return self
 
-    def set_mesh(self, mesh_name: str = 'Mesh.stl') -> "CoordinatesPipeline":
+    def set_mesh(self, mesh_path: str) -> "CoordinatesPipeline":
         """
         Устанавливает mesh адаптер для адаптивного определения высоты срезов.
 
         Args:
-            mesh_name: Имя файла mesh'а (по умолчанию 'mesh.stl')
+            mesh_path: Путь к файлу mesh'а (по умолчанию 'mesh.stl')
         """
-        mesh_path = self.path_manager.get_mesh_file_path(mesh_name)
         try:
             self.mesh_adapter = MeshAdapter(mesh_path)
             print(f"Загружен mesh из файла: {mesh_path}")
@@ -59,10 +59,10 @@ class CoordinatesPipeline:
         if not force and os.path.exists(self.path_manager.get_cut_area_file_path(os.path.splitext(self.file_name)[0] + '.pcd')):
             return self
 
-        pc_area = PCD.read(self.path_manager.get_area_file_path(self.file_name))
+        pc_area = PCD.read(self.file_path)
 
         if len(pc_area.points) == 0:
-            raise ValueError(f"Облако точек пустое: {self.path_manager.get_area_file_path(self.file_name)}")
+            raise ValueError(f"Облако точек пустое: {self.file_path}")
 
         print(f"Загружено точек: {len(pc_area.points)}")
         print(f"Диапазон Z исходного облака: [{pc_area.points[:, 2].min():.2f}, {pc_area.points[:, 2].max():.2f}]м")

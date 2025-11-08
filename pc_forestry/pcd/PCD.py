@@ -8,7 +8,7 @@ import pandas as pd
 import copy
 from ..utils.timer import Timer
 from .fields import (
-    Points, Intensity, RGB, Normals, OriginalCloudIndex, GPSTime, Illuminance,
+    Points, Intensity, RGB, Normals, OriginalCloudIndex, GPSTime, Illuminance, TreeID,
     Field, ScalarField, VectorField
 )
 from .is_inside import is_inside_sm_parallel, parallelpointinpolygon, ray_tracing_numpy_numba, is_inside_postgis_parallel
@@ -25,6 +25,7 @@ class PCD:
                 'original_cloud_index': OriginalCloudIndex(),
                 'gps_time': GPSTime(),
                 'illuminance': Illuminance(),
+                'tree_id': TreeID()
             }
         else:
             self._fields = fields
@@ -73,13 +74,12 @@ class PCD:
                     df_data[field.name] = field.data
         return pd.DataFrame(df_data)
 
-    def save(self, file_path: str) -> None:
+    def save(self, file_path: str, split: int = None) -> None:
         """Saves the point cloud to a file, dispatching to the correct format handler."""
         file_format = file_path.split('.')[-1]
 
         @Timer(f"Сохранение файла {file_path}")
-        def save_pcd(file_path):
-            num_points = len(self.points) if hasattr(self.points, '__len__') else 0
+        def save_pcd(file_path, _np=np):
             pcd_fields = []
             pcd_data_list = []
 
@@ -94,15 +94,18 @@ class PCD:
             if not pcd_data_list:
                 return
 
-            dt = np.hstack(pcd_data_list).astype(np.float32)
+            dt = _np.hstack(pcd_data_list).astype(_np.float32)
+            # Обеспечим C-смежность перед представлением как структурированный dtype
+            dt = _np.ascontiguousarray(dt)
+            num_points = dt.shape[0]
 
             md = {'version': .7, 'fields': pcd_fields,
                   'count': [1] * len(pcd_fields), 'width': num_points, 'height': 1,
                   'viewpoint': [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0], 'points': num_points,
                   'type': ['F'] * len(pcd_fields), 'size': [4] * len(pcd_fields), 'data': 'binary'}
 
-            dtype_list = [(name, np.float32) for name in pcd_fields]
-            pc_data = dt.view(np.dtype(dtype_list)).squeeze()
+            dtype_list = [(name, _np.float32) for name in pcd_fields]
+            pc_data = dt.view(_np.dtype(dtype_list)).squeeze()
 
             new_cloud = pypcd.PointCloud(md, pc_data)
             new_cloud.save_pcd(file_path, 'binary')
@@ -167,12 +170,21 @@ class PCD:
             print("invalid format")
 
     @classmethod
-    def read(cls, file_path: str, fields=None) -> 'PCD':
+    def read(cls, file_path: str, fields=None, txt_header: str = None, auto_oci: bool = False) -> 'PCD':
+        """
+        Читает файл и возвращает объект PCD.
+
+        :param file_path: Путь до файла.
+        :param fields: Набор полей для инициализации объекта.
+        :param txt_header: Кастомная строка заголовка для txt (например, "// X Y Z ..."),
+                            используется, если в файле отсутствует заголовок.
+        :param auto_oci: Если True, автоматически определить колонку с 0/1 как original_cloud_index.
+        """
         instance = cls(fields)
-        instance.open(file_path,)
+        instance.open(file_path, txt_header=txt_header, auto_oci=auto_oci)
         return instance
 
-    def open(self, file_path: str) -> None:
+    def open(self, file_path: str, txt_header: str = None, auto_oci: bool = False) -> None:
         file_ext = "." + file_path.split('.')[-1]
 
         @Timer(f"Открытие файла {file_path}")
@@ -206,12 +218,16 @@ class PCD:
         def open_las_laz(self, file_path):
             las = laspy.read(file_path)
             for field in self._fields.values():
-                try:
-                    # Uses the first (and likely only) attr from the field
-                    attr_name, loader_func = next(iter(field.las_attrs.items()))
-                    field.data = loader_func(las)
-                except (AttributeError, IndexError, StopIteration):
-                    pass  # Field not in las file
+                loaded = False
+                # Пробуем все возможные маппинги поля на LAS-атрибуты
+                for _, loader_func in field.las_attrs.items():
+                    try:
+                        field.data = loader_func(las)
+                        loaded = True
+                        break
+                    except Exception:
+                        continue
+                # Если ничего не загрузилось — оставляем поле как есть (дополним позже нулями)
 
         @Timer(f"Открытие файла {file_path}")
         def open_csv(self, file_path):
@@ -224,23 +240,44 @@ class PCD:
                         data = data.ravel()
                     field.data = data
 
-        @Timer(f"Открытие файла {file_path}")
+        # @Timer(f"Открытие файла {file_path}")
         def open_txt(self, file_path):
             with open(file_path, 'r') as file:
                 header_line = file.readline().strip()
 
+            # Определяем заголовок: из файла, либо из переданного txt_header
             if header_line.startswith('//'):
                 header = [col.strip('/') for col in header_line.split()]
+            elif txt_header is not None:
+                provided = txt_header.strip()
+                if provided.startswith('//'):
+                    header = [col.strip('/') for col in provided.split()]
+                else:
+                    header = [col.strip('/') for col in provided.split()]
             else:
                 raise ValueError(
                     f"Заголовок не найден в файле {file_path}. "
-                    f"Ожидалась строка, начинающаяся с '//'."
+                    f"Ожидалась строка, начинающаяся с '//', либо задайте txt_header."
                 )
 
             # Параметр `names` в pandas требует уникальных имен. Чтобы обработать
             # возможные дубликаты в заголовке файла, мы читаем данные без заголовка
             # и затем выбираем столбцы по их целочисленному индексу.
-            df = pd.read_csv(file_path, sep=r'\s+', comment='/', header=None)
+            # Используем движок 'python' и on_bad_lines='skip' для устойчивости к
+            # строкам с некорректным форматом и ошибкам токенизации (ParserError).
+            df = pd.read_csv(
+                file_path,
+                sep=r'\s+',
+                comment='/',
+                header=None,
+                engine='python',
+                on_bad_lines='skip'
+            )
+
+            # Ограничиваем заголовок реальным количеством столбцов данных
+            num_cols = df.shape[1]
+            if len(header) > num_cols:
+                header = header[:num_cols]
 
             # Мы создаем отображение каждого уникального имени столбца на индекс его
             # первого появления. Это гарантирует, что если имя столбца дублируется,
@@ -248,6 +285,7 @@ class PCD:
             # "читать только уникальные".
             unique_header_map = {name: i for i, name in reversed(list(enumerate(header)))}
 
+            used_indices = set()
             for field in self._fields.values():
                 # Отображение стандартных имен полей на имена в заголовке txt
                 column_map = field.txt_column_map  # например, {'nx': 'Nx', 'ny': 'Ny', 'nz': 'Nz'}
@@ -263,12 +301,46 @@ class PCD:
                     # Удаляем дубликаты индексов, сохраняя порядок, на случай, если
                     # несколько столбцов поля отображаются на один и тот же
                     # исходный столбец в txt-файле.
-                    unique_indices = list(dict.fromkeys(col_indices))
+                    unique_indices = [i for i in dict.fromkeys(col_indices) if i < num_cols]
+                    # Проверяем, что собрали ровно необходимое количество столбцов
+                    expected_cols = getattr(field, 'num_columns', 1)
+                    if (isinstance(field, ScalarField) and len(unique_indices) == 1) or \
+                       (not isinstance(field, ScalarField) and len(unique_indices) == expected_cols):
+                        data = df.iloc[:, unique_indices].values
+                        if isinstance(field, ScalarField):
+                            data = data.ravel()
+                        field.data = data
+                        used_indices.update(unique_indices)
 
-                    data = df.iloc[:, unique_indices].values
-                    if isinstance(field, ScalarField):
-                        data = data.ravel()
-                    field.data = data
+            # Автоопределение original_cloud_index по бинарной НЕ константной колонке (и 0, и 1)
+            if auto_oci and 'original_cloud_index' in self._fields:
+                oci_field = self._fields['original_cloud_index']
+                need_override = getattr(oci_field, 'size', 0) == 0
+                if not need_override:
+                    try:
+                        uniq = np.unique(np.nan_to_num(np.asarray(oci_field.data)))
+                        # если текущее поле константное, пробуем переопределить
+                        need_override = uniq.size == 1
+                    except Exception:
+                        need_override = True
+                if need_override:
+                    chosen_idx = None
+                    for idx in range(num_cols):
+                        if idx in used_indices:
+                            continue
+                        series = pd.to_numeric(df.iloc[:, idx], errors='coerce')
+                        values = series.to_numpy()
+                        if values.size == 0:
+                            continue
+                        values = np.nan_to_num(values, nan=0.0)
+                        unique_vals = np.unique(values)
+                        # Требуем строго два значения {0, 1}
+                        if unique_vals.size == 2 and np.isin(unique_vals, [0.0, 1.0]).all():
+                            chosen_idx = idx
+                            break
+                    if chosen_idx is not None:
+                        series = pd.to_numeric(df.iloc[:, chosen_idx], errors='coerce').fillna(0)
+                        oci_field.data = series.astype(np.int32).to_numpy().ravel()
 
         # Dispatch table for opening files
         openers = {
@@ -340,17 +412,52 @@ class PCD:
             if field.size > 0:
                 field.data = field.data[centroids]
 
-    def index_cut(self, idx_labels: np.ndarray) -> None:
-        """ cut points and all other fields using indexes """
+    def index_cut(self, idx_labels: np.ndarray) -> 'PCD':
+        """Subset all fields by indexes or boolean mask.
+
+        Accepts:
+        - integer index array
+        - boolean mask (1D)
+        - tuple from np.where (e.g., (array([...]),))
+        """
+        # Unwrap np.where output like (array([...]),)
+        if isinstance(idx_labels, tuple):
+            if len(idx_labels) != 1:
+                raise ValueError("index_cut expects a 1D selector; got multi-axis tuple")
+            idx_labels = idx_labels[0]
+
+        idx_labels = np.asarray(idx_labels)
+
+        # Determine target length for fallback allocations
+        if idx_labels.dtype == bool:
+            # Validate mask length if possible
+            if idx_labels.ndim != 1:
+                raise ValueError("Boolean mask for index_cut must be 1D")
+            if self.points.shape[0] != idx_labels.shape[0]:
+                raise ValueError(
+                    f"Boolean mask length ({idx_labels.shape[0]}) must match the number of points ({self.points.shape[0]})"
+                )
+            target_len = int(idx_labels.sum())
+        else:
+            target_len = int(len(idx_labels))
+
         for name, field in self._fields.items():
-            if field.size > 0 and hasattr(field.data, '__len__') and len(field.data) > 0:
-                try:
-                    field.data = field.data[idx_labels]
-                except IndexError:
-                    # This can happen if a field was not correctly sized.
-                    # We create an empty array of the correct shape.
-                    shape = (len(idx_labels), field.data.shape[1]) if field.data.ndim > 1 else (len(idx_labels),)
-                    field.data = np.empty(shape)
+            data = field.data
+            # Safely try to index; if it fails (empty/mismatch), allocate empty of proper shape
+            try:
+                field.data = data[idx_labels]
+            except Exception:
+                # Build an empty array with the right length and shape
+                if getattr(field, 'num_columns', None) is not None and getattr(data, 'ndim', 1) > 1:
+                    shape = (target_len, field.num_columns)
+                elif getattr(data, 'ndim', 1) > 1:
+                    shape = (target_len, data.shape[1])
+                else:
+                    shape = (target_len,)
+                # Preserve dtype similar to previous default
+                dtype = field.default_value.dtype
+                field.data = np.empty(shape, dtype=dtype)
+        return self
 
     def compute_field(self, name: str, **kwargs):
         """

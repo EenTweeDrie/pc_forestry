@@ -161,6 +161,14 @@ class TREE(PCD):
         vg = mlp.fit(self)
         trunk_voxels = [voxel for voxel in vg.voxels if voxel.label == 0]
         self.trunk = vg.get_pcd_by_voxels(trunk_voxels)
+        # Вернуть координаты ствола в исходную систему, если в инференсе был сдвиг
+        shift_vec = getattr(vg, 'shift_vector', None)
+        if shift_vec is not None:
+            try:
+                # В инференсе применялся points = points - shift; здесь вернем назад (прибавим shift)
+                self.trunk.shift_with_vector(-shift_vec)
+            except Exception:
+                pass
 
     def find_trunk_cluster(self, height_threshold: float = 3.0, intensity_cut: float = 5000) -> None:
         """ find the trunk cluster """
@@ -170,12 +178,12 @@ class TREE(PCD):
             # Step 1: Filter points within the lower height_threshold meters of the cloud
             z_min = np.min(self.points[:, 2])
             z_max = z_min + height_threshold
-            idx_labels = np.where(
-                (self.points[:, 2] >= z_min) & (self.points[:, 2] <= z_max))
+            idx_labels = ((self.points[:, 2] >= z_min) & (self.points[:, 2] <= z_max))
             self.trunk_slice = self.clone_like_pcd()
+            print(idx_labels.shape)
             self.trunk_slice.index_cut(idx_labels)
 
-            idx_labels = np.where(self.trunk_slice.intensity >= intensity_cut)
+            idx_labels = (self.trunk_slice.intensity >= intensity_cut)
             self.trunk_slice.index_cut(idx_labels)
             lower_points = self.trunk_slice.points
 

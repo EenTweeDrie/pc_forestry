@@ -62,18 +62,20 @@ class MLInferencer:
         if feature_params is None:
             feature_params = {}
 
-        pc.shift_to_coordinate()
+        # Работать на копии, чтобы не изменять исходный pc
+        pc_local = pc.clone()
+        pc_local.shift_to_coordinate()
 
         # Вычисляем нормали с параметрами если заданы
         normals_params = feature_params.get('normals', {})
-        pc.compute_field('normals', **normals_params)
+        pc_local.compute_field('normals', **normals_params)
 
         # Вычисляем освещенность с параметрами если заданы
-        if pc.illuminance is None or np.all(pc.illuminance == 0):
+        if pc_local.illuminance is None or np.all(pc_local.illuminance == 0):
             illuminance_params = feature_params.get('illuminance', {})
-            pc.compute_field('illuminance', **illuminance_params)
+            pc_local.compute_field('illuminance', **illuminance_params)
 
-        vg = VOXELGRID.create(pc, voxel_size, verbose=False)
+        vg = VOXELGRID.create(pc_local, voxel_size, verbose=False)
 
         index = np.array([voxel.index for voxel in vg.voxels])
         max_layer = int(np.max(index[:, 2]))
@@ -86,8 +88,8 @@ class MLInferencer:
 
         if not fast_mode:
             for layer in tqdm(range(min_layer, max_layer + 1), desc="Инференс по слоям"):
-                vg.calculate_distances_to_previous_layer_by_layer(pc.coordinate, layer=layer)
-                vg.calculate_distances_to_previous_layer_by_layer_XY(pc.coordinate, layer=layer)
+                vg.calculate_distances_to_previous_layer_by_layer(pc_local.coordinate, layer=layer)
+                vg.calculate_distances_to_previous_layer_by_layer_XY(pc_local.coordinate, layer=layer)
                 voxels_layer = vg.get_voxels_by_layer(layer=layer)
                 if not voxels_layer:
                     continue
@@ -97,8 +99,8 @@ class MLInferencer:
                 # Создаем временную воксельную сетку, включающую все воксели до текущего слоя
                 vg_total = VOXELGRID(PC=None, voxel_size=vg.voxel_size,
                                      voxels=list(voxels_total))
-                vg_total.calculate_distances_to_coordinate(pc.coordinate)
-                vg_total.calculate_distances_to_coordinate_XY(pc.coordinate)
+                vg_total.calculate_distances_to_coordinate(pc_local.coordinate)
+                vg_total.calculate_distances_to_coordinate_XY(pc_local.coordinate)
 
                 # Подготовка признаков для вокселей текущего слоя
                 if type_df == 'normalized':
@@ -126,13 +128,13 @@ class MLInferencer:
                     voxel.proba = p
         else:
             # Предварительно вычисляем статические признаки, которые не зависят от меток других вокселей
-            vg.calculate_distances_to_coordinate(pc.coordinate)
-            vg.calculate_distances_to_coordinate_XY(pc.coordinate)
+            vg.calculate_distances_to_coordinate(pc_local.coordinate)
+            vg.calculate_distances_to_coordinate_XY(pc_local.coordinate)
 
             for layer in tqdm(range(min_layer, max_layer + 1), desc="Инференс по слоям"):
                 # Динамически вычисляем признаки, зависящие от меток предыдущих слоев
-                vg.calculate_distances_to_previous_layer_by_layer(pc.coordinate, layer=layer)
-                vg.calculate_distances_to_previous_layer_by_layer_XY(pc.coordinate, layer=layer)
+                vg.calculate_distances_to_previous_layer_by_layer(pc_local.coordinate, layer=layer)
+                vg.calculate_distances_to_previous_layer_by_layer_XY(pc_local.coordinate, layer=layer)
 
                 voxels_layer = vg.get_voxels_by_layer(layer=layer)
                 if not voxels_layer:
@@ -171,5 +173,12 @@ class MLInferencer:
                 for voxel, p in zip(voxels_layer, proba):
                     voxel.label = int(p >= proba_threshold)  # Порог 0.5
                     voxel.proba = p
+
+        # Пробрасываем воксельной сетке вектор сдвига, чтобы можно было вернуть координаты обратно
+        try:
+            import numpy as _np
+            vg.shift_vector = getattr(pc_local, 'shift', _np.array([0.0, 0.0, 0.0]))
+        except Exception:
+            vg.shift_vector = None
 
         return vg

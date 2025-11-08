@@ -70,9 +70,10 @@ def process_cell_file(pc_cells, counter, params, path_manager, mesh_adapter: Opt
     # pc_cells.show(color_field='rgb')
 
     # pc_cells.show(color_field='rgb')
-    print('before filter_channels', pc_cells.points.shape[0])
     pc_cells = filter_channels(pc_cells, params)
-    print('after filter_channels', pc_cells.points.shape[0])
+    if pc_cells.points.shape[0] == 0:
+        logger.warning(f"No points after filter_channels")
+        return results
     # pc_cells.show(color_field='rgb')
     # pc_cells.show(color_field='intensity')
     count_before = pc_cells.points.shape[0]
