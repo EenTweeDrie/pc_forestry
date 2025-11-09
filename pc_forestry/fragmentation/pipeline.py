@@ -26,15 +26,21 @@ class FragmentationPipeline:
         self._output_dir: Optional[str] = None
 
     def set_params(self, params: Dict[str, Any]) -> "FragmentationPipeline":
-        self.params.update(params)
-        return self
-
-    def update_params(self, params: Dict[str, Any]) -> "FragmentationPipeline":
-        self.params.update(params)
-        return self
-
-    def coordinates(self, version: str, base_params: dict | None = None) -> "FragmentationPipeline":
-        logger.info(f"Running coordinates_first for {self.file_name}")
+        """
+        model_path: str,
+        find_trunk_ml_params: dict = {
+            'voxel_size': 0.3,
+            'type_df': 'original',
+            'fast_mode': True,
+            'proba_threshold': 0.4
+        },
+        split_trees_params: dict = {
+            'n_neighbors': 16,
+            'beta': 1.0,
+            'max_match_dist': 0.35,
+            'z_slice_height': 1.5,
+            'min_cluster_size': 1000
+        }
         base_params = {
             'mesh_height_from': 0.3,
             'mesh_height_to': 3,
@@ -56,6 +62,24 @@ class FragmentationPipeline:
             {**base_params, 'intensity_cut': 10000, 'lab_threshold_auto': False, 'lab_a_threshold': -50, 'lab_b_threshold': 50, 'priority': 2},
         ]
 
+        find_walls_params: dict = {
+            'find_walls': True,
+            'distance_threshold': 0.1,
+            'min_points_for_plane': 50000,
+            'verticality_threshold': 0.05,
+            'num_iterations': 1000
+        }
+        """
+        self.params.update(params)
+        return self
+
+    def update_params(self, params: Dict[str, Any]) -> "FragmentationPipeline":
+        self.params.update(params)
+        return self
+
+    def coordinates(self, version: str) -> "FragmentationPipeline":
+        logger.info(f"Running coordinates_first for {self.file_name}")
+
         if version == 'v1':
             file_path = self.file_path
         else:
@@ -67,7 +91,7 @@ class FragmentationPipeline:
                 file_path=file_path
             )
             .set_mesh(self.mesh_path)
-            .set_param_sets(param_sets)
+            .set_param_sets(self.params['param_sets'])
         )
 
         multi_cp.run(force_cut=True, force_cells=True, force_stumps=True)
@@ -146,7 +170,7 @@ class FragmentationPipeline:
 
         return self
 
-    def vertical_planes(self, version: str, find_walls: bool = True) -> "FragmentationPipeline":
+    def vertical_planes(self, version: str) -> "FragmentationPipeline":
         logger.info(f"Running vertical_planes for {self.file_name}")
         # Директория для сохранения финальных кластеров
         final_save_dir = os.path.join(self.base_path, 'final_clusters')
@@ -165,13 +189,14 @@ class FragmentationPipeline:
             keep_mask = np.ones(pc.points.shape[0], dtype=bool)
 
             # Находим точки, принадлежащие вертикальным плоскостям (стенам)
-            if find_walls:
+            find_walls_params = self.params['find_walls_params']
+            if find_walls_params['find_walls']:
                 wall_mask = segment_vertical_planes_mask(
                     pc.points,
-                    distance_threshold=0.1,
-                    min_points_for_plane=50000,
-                    verticality_threshold=0.05,
-                    num_iterations=1000
+                    distance_threshold=find_walls_params['distance_threshold'],
+                    min_points_for_plane=find_walls_params['min_points_for_plane'],
+                    verticality_threshold=find_walls_params['verticality_threshold'],
+                    num_iterations=find_walls_params['num_iterations']
                 )
                 pc_wall = pc.clone().index_cut(wall_mask)
 
@@ -300,19 +325,12 @@ class FragmentationPipeline:
 
         return self
 
-    def split_trees(
-        self,
-        version: str,
-        model_path: str,
-        config: dict = {
-            'voxel_size': 0.3,
-            'type_df': 'original',
-            'fast_mode': True,
-            'proba_threshold': 0.4
-        }
-    ) -> "FragmentationPipeline":
+    def split_trees(self, version: str) -> "FragmentationPipeline":
 
         os.makedirs(os.path.join(self.base_path, 'out'), exist_ok=True)
+        find_trunk_ml_params = self.params['find_trunk_ml_params']
+        split_trees_params = self.params['split_trees_params']
+        model_path = self.params['model_path']
 
         for file in os.listdir(os.path.join(self.base_path, f'found_clusters_{version}')):
             full_path = os.path.join(self.base_path, f'found_clusters_{version}', file)
@@ -321,7 +339,7 @@ class FragmentationPipeline:
             pc = TREE.read(full_path)
             pc.find_trunk_ml(
                 model_path=model_path,
-                config=config,
+                config=find_trunk_ml_params,
             )
 
             # Загрузите XY-координаты деревьев для этого кластера (если есть)
@@ -332,13 +350,7 @@ class FragmentationPipeline:
             trees = split_by_trunks_and_coords(
                 pc,
                 known_tree_coords_xy=None,  # или None, если хотите опираться только на стволы
-                params={
-                    'n_neighbors': 16,
-                    'beta': 1.0,
-                    'max_match_dist': 0.35,     # радиус «прилипания» координат к найденным стволам
-                    'z_slice_height': 1.5,     # высота нижнего среза для поиска стволов
-                    'min_cluster_size': 1000,    # минимальный размер кластера ствола
-                }
+                params=split_trees_params
             )
             file_name = file.split('.')[0]
 
@@ -350,13 +362,13 @@ class FragmentationPipeline:
 
         return self
 
-    def run(self, model_path: str, config: dict) -> "FragmentationPipeline":
-        logger.info(f"Running run for {self.file_name}")
-        self.coordinates(version='v1')
-        self.choose_segments(version='v1')
-        self.vertical_planes(version='v1')
-        self.merge_clusters(version='v2')
-        self.coordinates(version='v2')
-        self.choose_segments(version='v2')
-        self.split_trees(version='v2', model_path=model_path, config=config)
-        return self
+    # def run(self, model_path: str, config: dict) -> "FragmentationPipeline":
+    #     logger.info(f"Running run for {self.file_name}")
+    #     self.coordinates(version='v1')
+    #     self.choose_segments(version='v1')
+    #     self.vertical_planes(version='v1')
+    #     self.merge_clusters(version='v2')
+    #     self.coordinates(version='v2')
+    #     self.choose_segments(version='v2')
+    #     self.split_trees(version='v2', model_path=model_path, config=config)
+    #     return self
