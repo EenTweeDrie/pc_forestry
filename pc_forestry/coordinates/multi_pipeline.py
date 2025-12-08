@@ -110,7 +110,8 @@ class MultiCoordinatesPipeline:
                 cp.cut_mesh_data(force=force_cut)
             else:
                 # Если меш не задан, предполагается другой способ нарезки (в проекте отключён)
-                raise Exception("Mesh adapter обязателен для текущего режима")
+                cp.cut_slice_data()
+                # raise Exception("Mesh adapter обязателен для текущего режима")
 
             cp.make_cells(force=force_cells).make_stumps(force=force_stumps)
 

@@ -5,7 +5,7 @@ from tqdm import tqdm
 from loguru import logger
 
 from ..path_manager import PathManager
-from ..pcd.TREE import TREE
+from ..pcd.PCD import PCD
 from ..pcd.VOXEL import VOXELGRID
 from ..utils.timer import Timer
 
@@ -20,8 +20,8 @@ class DatasetBuilder:
         self._datasets_config = datasets_config
 
     @Timer("Подготовка файла")
-    def _prepare_tree_file(self, file_path: str) -> TREE:
-        pc = TREE.read(file_path)
+    def _prepare_tree_file(self, file_path: str) -> PCD:
+        pc = PCD.read(file_path)
 
         # Получаем параметры для вычисления признаков из конфигурации
         feature_params = self._datasets_config.get('feature_params', {})
@@ -57,7 +57,7 @@ class DatasetBuilder:
     def _process_tree_file(self, file_path: str, voxel_size: float) -> pd.DataFrame:
         type_df = self._datasets_config.get('type_df', 'normalized')
         with Timer(f"Обработка файла {os.path.basename(file_path)}"):
-            pc = TREE.read(file_path)
+            pc = PCD.read(file_path)
             pc.shift_to_coordinate()
             pc.compute_field('normals')
             vg = VOXELGRID.create(pc, voxel_size, verbose=False)

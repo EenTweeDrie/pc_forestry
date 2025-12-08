@@ -7,14 +7,22 @@ import h5py
 import pandas as pd
 import copy
 from ..utils.timer import Timer
+import re
 from .fields import (
-    Points, Intensity, RGB, Normals, OriginalCloudIndex, GPSTime, Illuminance, TreeID,
-    Field, ScalarField, VectorField
+    Points, Intensity, RGB, Normals, OriginalCloudIndex, GPSTime, IlluminanceRay, IlluminancePCV, IlluminanceCC, TreeID,
+    NYFilteringMask, NXFilteringMask, NZFilteringMask, NFilteringMask,
+    Field, ScalarField, VectorField, ExpandFilteringMask
 )
 from .is_inside import is_inside_sm_parallel, parallelpointinpolygon, ray_tracing_numpy_numba, is_inside_postgis_parallel
 
 
 class PCD:
+    # Зависимости вычисляемых полей
+    _FIELD_DEPENDENCIES = {
+        'n_filtering_mask': ['nx_filtering_mask', 'ny_filtering_mask', 'nz_filtering_mask'],
+        'expand_filtering_mask': ['n_filtering_mask'],
+    }
+
     def __init__(self, fields=None, **kwargs):
         if fields is None:
             self._fields = {
@@ -24,8 +32,15 @@ class PCD:
                 'normals': Normals(),
                 'original_cloud_index': OriginalCloudIndex(),
                 'gps_time': GPSTime(),
-                'illuminance': Illuminance(),
-                'tree_id': TreeID()
+                'illuminance_ray': IlluminanceRay(),
+                'illuminance_pcv': IlluminancePCV(),
+                'illuminance_cc': IlluminanceCC(),
+                'tree_id': TreeID(),
+                'ny_filtering_mask': NYFilteringMask(),
+                'nx_filtering_mask': NXFilteringMask(),
+                'nz_filtering_mask': NZFilteringMask(),
+                'n_filtering_mask': NFilteringMask(),
+                'expand_filtering_mask': ExpandFilteringMask(),
             }
         else:
             self._fields = fields
@@ -98,14 +113,25 @@ class PCD:
             # Обеспечим C-смежность перед представлением как структурированный dtype
             dt = _np.ascontiguousarray(dt)
             num_points = dt.shape[0]
+            if num_points == 0:
+                # Пустое облако — не сохраняем файл, чтобы не создавать некорректный .pcd
+                return
+
+            # Имена полей PCD должны содержать только безопасные символы: заменим прочие на '_'
+            # Это важно, т.к. стандартный парсер pypcd не поддерживает скобки и ряд других символов.
+            pcd_fields_sanitized = [re.sub(r'\W+', '_', name) for name in pcd_fields]
 
             md = {'version': .7, 'fields': pcd_fields,
                   'count': [1] * len(pcd_fields), 'width': num_points, 'height': 1,
-                  'viewpoint': [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0], 'points': num_points,
+                  # PCL ожидает 7 значений: x y z qw qx qy qz
+                  'viewpoint': [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], 'points': num_points,
                   'type': ['F'] * len(pcd_fields), 'size': [4] * len(pcd_fields), 'data': 'binary'}
 
-            dtype_list = [(name, _np.float32) for name in pcd_fields]
-            pc_data = dt.view(_np.dtype(dtype_list)).squeeze()
+            # Используем санитизированные имена в dtype и заголовке
+            md['fields'] = pcd_fields_sanitized
+            dtype_list = [(name, _np.float32) for name in pcd_fields_sanitized]
+            # Преобразуем матрицу [N, F] в структуру с N записями
+            pc_data = dt.view(_np.dtype(dtype_list)).reshape(num_points)
 
             new_cloud = pypcd.PointCloud(md, pc_data)
             new_cloud.save_pcd(file_path, 'binary')
@@ -131,7 +157,7 @@ class PCD:
 
         @Timer(f"Сохранение файла {file_path}")
         def save_csv(file_pathe):
-            self.df.to_csv(file_path, index=False)
+            self.df.to_csv(file_path, index=False, sep=';')
 
         @Timer(f"Сохранение файла {file_path}")
         def save_txt(file_path):
@@ -191,19 +217,20 @@ class PCD:
         def open_pcd(self, file_path):
             cloud = pypcd.PointCloud.from_path(file_path)
             cloud_data = cloud.pc_data
-            metadata_fields = cloud.get_metadata()["fields"]
+            metadata_fields = cloud.get_metadata().get("fields", [])
+            dtype_names = list(cloud_data.dtype.names) if cloud_data.dtype.names else []
 
             for field in self._fields.values():
                 pcd_fields = field.pcd_field_names
                 try:
-                    # Handle single field fields (like rgb, intensity)
-                    if len(pcd_fields) == 1 and pcd_fields[0] in metadata_fields:
-                        field.unpack_pcd_data(cloud_data[pcd_fields[0]])
-                    # Handle multi-field fields (like points, normals)
-                    elif all(f in metadata_fields for f in pcd_fields):
-                        data_slice = np.array([cloud_data[f] for f in pcd_fields]).T
+                    resolved_names = field.resolve_name_list(pcd_fields, dtype_names or metadata_fields)
+                    if not resolved_names:
+                        continue
+                    if len(resolved_names) == 1:
+                        field.unpack_pcd_data(cloud_data[resolved_names[0]])
+                    else:
+                        data_slice = np.array([cloud_data[f] for f in resolved_names]).T
                         field.unpack_pcd_data(data_slice)
-
                 except (ValueError, IndexError, KeyError):
                     pass  # Field not found
 
@@ -211,8 +238,9 @@ class PCD:
         def open_h5(self, file_path):
             with h5py.File(file_path, 'r') as h5f:
                 for name, field in self._fields.items():
-                    if name in h5f:
-                        field.data = np.asarray(h5f.get(name))
+                    dataset_name = field.resolve_name_variant(name, h5f.keys())
+                    if dataset_name is not None:
+                        field.data = np.asarray(h5f.get(dataset_name))
 
         @Timer(f"Открытие файла {file_path}")
         def open_las_laz(self, file_path):
@@ -231,16 +259,17 @@ class PCD:
 
         @Timer(f"Открытие файла {file_path}")
         def open_csv(self, file_path):
-            df = pd.read_csv(file_path)
+            df = pd.read_csv(file_path, sep=';')
             for field in self._fields.values():
                 cols = field.df_column_names
-                if all(c in df.columns for c in cols):
-                    data = df[cols].values
+                resolved_cols = field.resolve_name_list(cols, df.columns)
+                if resolved_cols:
+                    data = df[resolved_cols].values
                     if isinstance(field, ScalarField):
                         data = data.ravel()
                     field.data = data
 
-        # @Timer(f"Открытие файла {file_path}")
+        @Timer(f"Открытие файла {file_path}")
         def open_txt(self, file_path):
             with open(file_path, 'r') as file:
                 header_line = file.readline().strip()
@@ -293,9 +322,10 @@ class PCD:
                 # Находим целочисленные индексы столбцов, необходимых для этого поля
                 col_indices = []
                 for df_col in field.df_column_names:
-                    txt_col_name = column_map.get(df_col)
-                    if txt_col_name and txt_col_name in unique_header_map:
-                        col_indices.append(unique_header_map[txt_col_name])
+                    txt_col_name = column_map.get(df_col, df_col)
+                    resolved_header = field.resolve_name_variant(txt_col_name, header)
+                    if resolved_header and resolved_header in unique_header_map:
+                        col_indices.append(unique_header_map[resolved_header])
 
                 if col_indices:
                     # Удаляем дубликаты индексов, сохраняя порядок, на случай, если
@@ -459,6 +489,44 @@ class PCD:
                 field.data = np.empty(shape, dtype=dtype)
         return self
 
+    def _is_field_all_zeros(self, name: str) -> bool:
+        if name not in self._fields:
+            return True
+        field = self._fields[name]
+        if getattr(field, 'size', 0) == 0:
+            return True
+        try:
+            arr = np.nan_to_num(np.asarray(field.data))
+        except Exception:
+            return True
+        if arr.size == 0:
+            return True
+        return bool(np.all(arr == 0))
+
+    def _ensure_dependencies(self, name: str, visiting: set | None = None):
+        if visiting is None:
+            visiting = set()
+        if name in visiting:
+            return
+        visiting.add(name)
+        deps = self._FIELD_DEPENDENCIES.get(name, [])
+        for dep in deps:
+            # Рекурсивно обеспечим зависимости
+            self._ensure_dependencies(dep, visiting)
+            # Если зависимость пустая/нулевая/не той длины — пересчитываем
+            need_compute = (
+                dep not in self._fields or
+                self._fields[dep].size == 0 or
+                (hasattr(self.points, 'shape') and getattr(self._fields[dep].data, 'shape', (0,))[0] != self.points.shape[0]) or
+                self._is_field_all_zeros(dep)
+            )
+            if dep in self._fields and need_compute:
+                try:
+                    self._fields[dep].compute(self)
+                except Exception:
+                    pass
+        visiting.remove(name)
+
     def compute_field(self, name: str, **kwargs):
         """
         Вычисляет данные для указанного поля.
@@ -466,11 +534,15 @@ class PCD:
         :param name: Имя поля для вычисления (например, 'normals', 'illuminance').
         :param kwargs: Дополнительные аргументы, передаваемые в метод compute() поля.
         """
-        if name in self._fields:
-            field = self._fields[name]
-            field.compute(self, **kwargs)
-        else:
+        if name not in self._fields:
             raise ValueError(f"Field '{name}' not found in PCD object.")
+        # Обеспечим зависимости перед расчётом
+        try:
+            self._ensure_dependencies(name)
+        except Exception:
+            pass
+        field = self._fields[name]
+        field.compute(self, **kwargs)
 
     def append(self, other: 'PCD') -> None:
         """ append PCD object """
@@ -577,7 +649,7 @@ class PCD:
 
     def shift_with_vector(self, shift_vector: np.ndarray) -> None:
         """ shift points by shift_vector """
-        self.points = self.points - shift_vector
+        self.points = self.points + shift_vector
         if hasattr(self, 'shift'):
             self.shift += shift_vector
         else:

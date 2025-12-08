@@ -2,7 +2,6 @@ import numpy as np
 from scipy.ndimage import label
 import scipy
 import open3d as o3d
-from pc_forestry.pcd.PCD import PCD
 import matplotlib.pyplot as plt
 import cc3d  # connected-components
 from PIL import Image

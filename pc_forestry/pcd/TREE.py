@@ -84,7 +84,7 @@ class TREE(PCD):
                  gps_time: np.ndarray = None,
                  original_cloud_index: np.ndarray = None,
                  rgb: np.ndarray = None,
-                 illuminance: np.ndarray = None,
+                 illuminance_ray: np.ndarray = None,
                  name: str = None,
                  coordinate: np.ndarray = None,
                  ):
@@ -93,7 +93,7 @@ class TREE(PCD):
                          gps_time=gps_time,
                          original_cloud_index=original_cloud_index,
                          rgb=rgb,
-                         illuminance=illuminance)
+                         illuminance_ray=illuminance_ray)
         self.name = name
         self.coordinate = coordinate
         self.trunk_slice: PCD = None
@@ -109,7 +109,7 @@ class TREE(PCD):
             gps_time=pc.gps_time,
             original_cloud_index=pc.original_cloud_index,
             rgb=pc.rgb,
-            illuminance=pc.illuminance,
+            illuminance_ray=pc.illuminance_ray,
         )
         return instance
 
@@ -180,7 +180,6 @@ class TREE(PCD):
             z_max = z_min + height_threshold
             idx_labels = ((self.points[:, 2] >= z_min) & (self.points[:, 2] <= z_max))
             self.trunk_slice = self.clone_like_pcd()
-            print(idx_labels.shape)
             self.trunk_slice.index_cut(idx_labels)
 
             idx_labels = (self.trunk_slice.intensity >= intensity_cut)
@@ -233,16 +232,16 @@ class TREE(PCD):
                     if max(choosen_cluster[:, 2]) - min(choosen_cluster[:, 2]) > height_threshold/2:
                         if min(choosen_cluster[:, 2]) - min(lower_points[:, 2]) < 0.25:
                             best_index = choosen_index
-                            logger.debug(
-                                f'Best cluster is {best_index} with {choosen_cluster.shape[0]} points')
+                            # logger.debug(
+                            # f'Best cluster is {best_index} with {choosen_cluster.shape[0]} points')
                             break
 
             # Step 6: Cut the trunk slice
             if best_index is not None:
                 idx_labels = np.where(cluster_labels == best_index)
                 self.trunk_slice.index_cut(idx_labels)
-            else:
-                logger.warning("Probability is too low")
+            # else:
+            #     logger.warning("Probability is too low")
 
             # Step 7: Apply Statistical Outlier Removal
             lof = LocalOutlierFactor(n_neighbors=20, contamination=0.1)
@@ -417,11 +416,11 @@ class TREE(PCD):
         distance = np.sqrt((xc_circle - xc_mass) ** 2 +
                            (yc_circle - yc_mass) ** 2)
         if distance > error_threshold:
-            logger.debug(f'Choose the center of mass')
+            # logger.debug(f'Choose the center of mass')
             coordinate = [xc_mass, yc_mass,
                           (high_height-low_height)/2+low_height+z_min]
         else:
-            logger.debug(f'Choose the center of the circle')
+            # logger.debug(f'Choose the center of the circle')
             coordinate = [xc_circle, yc_circle,
                           (high_height-low_height)/2+low_height+z_min]
 

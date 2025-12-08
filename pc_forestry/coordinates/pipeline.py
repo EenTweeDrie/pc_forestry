@@ -111,16 +111,19 @@ class CoordinatesPipeline:
         pc_area.save(self.path_manager.get_cut_area_file_path(self.file_name))
         return self
 
-    # def cut_slice_data(self) -> "CoordinatesPipeline":
-    #     pc_area = PCD.read(self.path_manager.get_area_file_path(self.file_name))
-    #     shift_vector = self.params.get('shift_vector', pc_area.calculate_auto_shift_vector())
-    #     pc_area.shift_with_vector(shift_vector=shift_vector)
+    def cut_slice_data(self) -> "CoordinatesPipeline":
+        pc_area = PCD.read(self.path_manager.get_area_file_path(self.file_name))
+        # shift_vector = self.params.get('shift_vector', pc_area.calculate_auto_shift_vector())
+        # pc_area.shift_with_vector(shift_vector=shift_vector)
 
-    #     idx_labels = np.where((pc_area.points[:, 2] > self.params['low_height']) & (pc_area.points[:, 2] <= self.params['high_height']))
-    #     pc_area.index_cut(idx_labels)
-
-    #     pc_area.save(self.path_manager.get_cut_area_file_path(self.file_name))
-    #     return self
+        idx_labels = np.where((pc_area.points[:, 2] > self.params['low_height'] + pc_area.points[:, 2].min()) &
+                              (pc_area.points[:, 2] <= self.params['high_height'] + pc_area.points[:, 2].min()))
+        pc_area.index_cut(idx_labels)
+        # kostyl
+        self.file_name = os.path.splitext(self.file_name)[0] + '.pcd'
+        # kostyl
+        pc_area.save(self.path_manager.get_cut_area_file_path(self.file_name))
+        return self
 
     def make_cells(self, force: bool = True) -> "CoordinatesPipeline":
         if not force and os.path.exists(self.path_manager.get_cells_data_dir()) and os.listdir(self.path_manager.get_cells_data_dir()):

@@ -125,10 +125,10 @@ def process_cell_file(pc_cells, counter, params, path_manager, mesh_adapter: Opt
 
             if diameter > 1:
                 pc_stump.compute_field('normals')
-                pc_stump.compute_field('illuminance')
+                pc_stump.compute_field('illuminance_ray')
                 # Рассчитываем медиану освещенности, чтобы отфильтровать 50% точек
-                median_illuminance = np.percentile(pc_stump.illuminance, 50)
-                illuminance_indices = np.where(pc_stump.illuminance <= median_illuminance)
+                median_illuminance = np.percentile(pc_stump.illuminance_ray, 50)
+                illuminance_indices = np.where(pc_stump.illuminance_ray <= median_illuminance)
                 pc_stump.index_cut(illuminance_indices)
 
             # Проверка высоты кластера
