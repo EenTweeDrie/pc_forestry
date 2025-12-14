@@ -193,7 +193,15 @@ class TREE(PCD):
                 return None
 
             # Step 2: Apply HDBSCAN clustering
-            clusterer = hdbscan.HDBSCAN(min_cluster_size=10,
+            min_cluster_size = 10
+            if lower_points.shape[0] < min_cluster_size:
+                logger.warning(
+                    f"Недостаточно точек ({lower_points.shape[0]}) для HDBSCAN кластеризации (минимум {min_cluster_size}). "
+                    "Используем все точки как trunk_slice.")
+                # Оставляем все точки как trunk_slice
+                return None
+
+            clusterer = hdbscan.HDBSCAN(min_cluster_size=min_cluster_size,
                                         core_dist_n_jobs=1)
             cluster_labels = clusterer.fit_predict(lower_points)
 
@@ -245,9 +253,15 @@ class TREE(PCD):
                 logger.warning("Probability is too low")
 
             # Step 7: Apply Statistical Outlier Removal
-            lof = LocalOutlierFactor(n_neighbors=20, contamination=0.1)
-            inliers = lof.fit_predict(self.trunk_slice.points) > 0
-            self.trunk_slice.index_cut(inliers)
+            n_neighbors_lof = 20
+            if self.trunk_slice.points.shape[0] > n_neighbors_lof:
+                lof = LocalOutlierFactor(n_neighbors=n_neighbors_lof, contamination=0.1)
+                inliers = lof.fit_predict(self.trunk_slice.points) > 0
+                self.trunk_slice.index_cut(inliers)
+            else:
+                logger.warning(
+                    f"Недостаточно точек ({self.trunk_slice.points.shape[0]}) для LOF фильтрации (нужно > {n_neighbors_lof}). "
+                    "Пропускаем этап очистки от выбросов.")
 
             if self.trunk_slice.points.size == 0:
                 logger.error("All points were removed as outliers.")
@@ -396,6 +410,16 @@ class TREE(PCD):
         if self.trunk_slice is None:
             self.find_trunk_cluster()
 
+        # Проверяем, что trunk_slice существует и содержит точки
+        if self.trunk_slice is None or self.trunk_slice.points is None or self.trunk_slice.points.size == 0:
+            logger.warning("trunk_slice пустой или не найден, используем центр масс всего облака как координату")
+            # Fallback: используем центр масс всего облака точек
+            center_x = np.mean(self.points[:, 0])
+            center_y = np.mean(self.points[:, 1])
+            z_min = np.min(self.points[:, 2])
+            self.coordinate = [center_x, center_y, z_min]
+            return
+
         z_min = min(self.trunk_slice.points[:, 2])
 
         # Find the center of the circle at a height of 0.3 meters
@@ -404,25 +428,45 @@ class TREE(PCD):
             (self.trunk_slice.points[:, 2] < high_height + z_min + low_height)
         )
         points_layer_0_3 = self.trunk_slice.points[idx_labels_0_3]
-        xc_circle, yc_circle, _, _ = cf.standardLSQ(points_layer_0_3[:, :2])
 
         # Find the center of mass of points at a height of up to high_height=0.75 meters
         idx_labels_0_75 = np.where(
             self.trunk_slice.points[:, 2] < high_height + z_min)
         points_layer_0_75 = self.trunk_slice.points[idx_labels_0_75]
-        xc_mass, yc_mass = np.mean(points_layer_0_75[:, 0]), np.mean(
-            points_layer_0_75[:, 1])
 
-        # Select the coordinate depending on the distance between the centers
-        distance = np.sqrt((xc_circle - xc_mass) ** 2 +
-                           (yc_circle - yc_mass) ** 2)
-        if distance > error_threshold:
-            logger.debug(f'Choose the center of mass')
-            coordinate = [xc_mass, yc_mass,
-                          (high_height-low_height)/2+low_height+z_min]
+        # Fallback на центр масс если точек нет
+        if points_layer_0_75.shape[0] == 0:
+            logger.warning("Нет точек для расчёта координаты, используем центр масс trunk_slice")
+            xc_mass = np.mean(self.trunk_slice.points[:, 0])
+            yc_mass = np.mean(self.trunk_slice.points[:, 1])
         else:
-            logger.debug(f'Choose the center of the circle')
-            coordinate = [xc_circle, yc_circle,
+            xc_mass, yc_mass = np.mean(points_layer_0_75[:, 0]), np.mean(points_layer_0_75[:, 1])
+
+        # Для аппроксимации окружности нужно минимум 3 точки
+        min_points_for_circle = 3
+        if points_layer_0_3.shape[0] >= min_points_for_circle:
+            try:
+                xc_circle, yc_circle, _, _ = cf.standardLSQ(points_layer_0_3[:, :2])
+                # Select the coordinate depending on the distance between the centers
+                distance = np.sqrt((xc_circle - xc_mass) ** 2 +
+                                   (yc_circle - yc_mass) ** 2)
+                if distance > error_threshold:
+                    logger.debug(f'Choose the center of mass')
+                    coordinate = [xc_mass, yc_mass,
+                                  (high_height-low_height)/2+low_height+z_min]
+                else:
+                    logger.debug(f'Choose the center of the circle')
+                    coordinate = [xc_circle, yc_circle,
+                                  (high_height-low_height)/2+low_height+z_min]
+            except Exception as e:
+                logger.warning(f"Ошибка при аппроксимации окружности: {e}. Используем центр масс.")
+                coordinate = [xc_mass, yc_mass,
+                              (high_height-low_height)/2+low_height+z_min]
+        else:
+            logger.warning(
+                f"Недостаточно точек ({points_layer_0_3.shape[0]}) для аппроксимации окружности "
+                f"(минимум {min_points_for_circle}). Используем центр масс.")
+            coordinate = [xc_mass, yc_mass,
                           (high_height-low_height)/2+low_height+z_min]
 
         if low_height == 0:
