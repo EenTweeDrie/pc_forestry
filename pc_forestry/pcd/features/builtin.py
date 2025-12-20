@@ -254,6 +254,34 @@ class MeanAbsNz(VoxelFeature):
         return means.astype(np.float64, copy=False)
 
 
+class MeanAbsNy(VoxelFeature):
+    name = "mean_abs_ny"
+    dim = 1
+    doc = "Среднее |ny| по нормалям точек в вокселе"
+
+    def compute(self, grid, **kwargs) -> np.ndarray:
+        if grid.PC.normals.size == 0 or grid._inverse is None or grid._counts is None:
+            return np.zeros(len(grid), dtype=np.float64)
+        abs_ny = np.abs(grid.PC.normals[:, 1])
+        sums = np.bincount(grid._inverse, weights=abs_ny, minlength=len(grid))
+        means = sums / _safe_counts(grid)
+        return means.astype(np.float64, copy=False)
+
+
+class MeanAbsNx(VoxelFeature):
+    name = "mean_abs_nx"
+    dim = 1
+    doc = "Среднее |nx| по нормалям точек в вокселе"
+
+    def compute(self, grid, **kwargs) -> np.ndarray:
+        if grid.PC.normals.size == 0 or grid._inverse is None or grid._counts is None:
+            return np.zeros(len(grid), dtype=np.float64)
+        abs_nx = np.abs(grid.PC.normals[:, 0])
+        sums = np.bincount(grid._inverse, weights=abs_nx, minlength=len(grid))
+        means = sums / _safe_counts(grid)
+        return means.astype(np.float64, copy=False)
+
+
 class DistanceToCoord(VoxelFeature):
     name = "distance_to_coord"
     dim = 1
@@ -675,6 +703,8 @@ register_feature(MeanGpsTime())
 register_feature(CenterCoords())
 register_feature(HeightNorm())
 register_feature(MeanAbsNz())
+register_feature(MeanAbsNy())
+register_feature(MeanAbsNx())
 register_feature(DistanceToCoord())
 register_feature(DistanceToCoordXY())
 register_feature(Label())
