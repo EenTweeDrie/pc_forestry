@@ -12,6 +12,68 @@ def _safe_counts(grid) -> np.ndarray:
     return np.maximum(grid._counts, 1)
 
 
+def _mode_per_voxel_int(
+    inverse: np.ndarray,
+    values: np.ndarray,
+    num_voxels: int,
+    *,
+    default: int = 0,
+) -> np.ndarray:
+    """
+    Векторизованный подсчёт "моды" (самого частого значения) для каждой группы.
+
+    Вход:
+    - inverse: (N,) int, voxel-id для каждой точки
+    - values: (N,) int, значение для каждой точки (например, label/mask)
+    - num_voxels: число вокселей (len(grid))
+
+    Выход:
+    - (num_voxels,) int64 с наиболее частым значением по каждой группе.
+
+    Реализовано через сортировку по (voxel_id, value) и run-length, без Python-циклов по вокселям.
+    """
+    inv = np.asarray(inverse)
+    vals = np.asarray(values)
+    if inv.size == 0 or vals.size == 0 or num_voxels <= 0:
+        return np.full((int(num_voxels),), int(default), dtype=np.int64)
+
+    inv = inv.astype(np.int64, copy=False).ravel()
+    vals = vals.astype(np.int64, copy=False).ravel()
+    n = inv.shape[0]
+    if vals.shape[0] != n:
+        raise ValueError("inverse и values должны иметь одинаковую длину")
+
+    # Упорядочим точки по (voxel_id, value)
+    order = np.lexsort((vals, inv))
+    inv_s = inv[order]
+    val_s = vals[order]
+
+    # Границы "ранов" где меняется (voxel_id,value)
+    # run_start[0]=0, дальше там, где пара отличается от предыдущей
+    diff = (inv_s[1:] != inv_s[:-1]) | (val_s[1:] != val_s[:-1])
+    run_starts = np.concatenate([np.array([0], dtype=np.int64), np.nonzero(diff)[0].astype(np.int64) + 1])
+    run_ends = np.concatenate([run_starts[1:], np.array([n], dtype=np.int64)])
+    run_counts = (run_ends - run_starts).astype(np.int64, copy=False)
+    run_vox = inv_s[run_starts]
+    run_val = val_s[run_starts]
+
+    # Выберем для каждого voxel run с максимальным count.
+    # Сортируем раны по (voxel_id, -count), и берём первый для каждого voxel_id.
+    order_runs = np.lexsort((run_val, -run_counts, run_vox))
+    run_vox_o = run_vox[order_runs]
+    run_val_o = run_val[order_runs]
+    # индексы первого вхождения каждого voxel_id в order_runs
+    _, first_idx = np.unique(run_vox_o, return_index=True)
+    vox_ids = run_vox_o[first_idx]
+    modes = run_val_o[first_idx]
+
+    out = np.full((int(num_voxels),), int(default), dtype=np.int64)
+    # Защитимся от мусорных voxel id
+    m = (vox_ids >= 0) & (vox_ids < num_voxels)
+    out[vox_ids[m]] = modes[m]
+    return out
+
+
 class NumPoints(VoxelFeature):
     name = "num_points"
     dim = 1
@@ -375,17 +437,7 @@ class Label(VoxelFeature):
     def compute(self, grid, **kwargs) -> np.ndarray:
         if grid.PC.original_cloud_index.size == 0 or grid._inverse is None:
             return np.zeros(len(grid), dtype=np.int64)
-        labels = np.zeros(len(grid), dtype=np.int64)
-        for vid in range(len(grid)):
-            mask = (grid._inverse == vid)
-            if not np.any(mask):
-                continue
-            oci = grid.PC.original_cloud_index[mask].astype(np.int64, copy=False)
-            if oci.size == 0:
-                continue
-            bc = np.bincount(oci)
-            labels[vid] = int(bc.argmax())
-        return labels
+        return _mode_per_voxel_int(grid._inverse, grid.PC.original_cloud_index, len(grid), default=0)
 
 
 class NXFilteringMask(VoxelFeature):
@@ -396,17 +448,7 @@ class NXFilteringMask(VoxelFeature):
     def compute(self, grid, **kwargs) -> np.ndarray:
         if grid.PC.nx_filtering_mask.size == 0 or grid._inverse is None:
             return np.zeros(len(grid), dtype=np.int64)
-        labels = np.zeros(len(grid), dtype=np.int64)
-        for vid in range(len(grid)):
-            mask = (grid._inverse == vid)
-            if not np.any(mask):
-                continue
-            oci = grid.PC.nx_filtering_mask[mask].astype(np.int64, copy=False)
-            if oci.size == 0:
-                continue
-            bc = np.bincount(oci)
-            labels[vid] = int(bc.argmax())
-        return labels
+        return _mode_per_voxel_int(grid._inverse, grid.PC.nx_filtering_mask, len(grid), default=0)
 
 
 class NYFilteringMask(VoxelFeature):
@@ -417,17 +459,7 @@ class NYFilteringMask(VoxelFeature):
     def compute(self, grid, **kwargs) -> np.ndarray:
         if grid.PC.ny_filtering_mask.size == 0 or grid._inverse is None:
             return np.zeros(len(grid), dtype=np.int64)
-        labels = np.zeros(len(grid), dtype=np.int64)
-        for vid in range(len(grid)):
-            mask = (grid._inverse == vid)
-            if not np.any(mask):
-                continue
-            oci = grid.PC.ny_filtering_mask[mask].astype(np.int64, copy=False)
-            if oci.size == 0:
-                continue
-            bc = np.bincount(oci)
-            labels[vid] = int(bc.argmax())
-        return labels
+        return _mode_per_voxel_int(grid._inverse, grid.PC.ny_filtering_mask, len(grid), default=0)
 
 
 class NZFilteringMask(VoxelFeature):
@@ -438,17 +470,7 @@ class NZFilteringMask(VoxelFeature):
     def compute(self, grid, **kwargs) -> np.ndarray:
         if grid.PC.nz_filtering_mask.size == 0 or grid._inverse is None:
             return np.zeros(len(grid), dtype=np.int64)
-        labels = np.zeros(len(grid), dtype=np.int64)
-        for vid in range(len(grid)):
-            mask = (grid._inverse == vid)
-            if not np.any(mask):
-                continue
-            oci = grid.PC.nz_filtering_mask[mask].astype(np.int64, copy=False)
-            if oci.size == 0:
-                continue
-            bc = np.bincount(oci)
-            labels[vid] = int(bc.argmax())
-        return labels
+        return _mode_per_voxel_int(grid._inverse, grid.PC.nz_filtering_mask, len(grid), default=0)
 
 
 class NFilteringMask(VoxelFeature):
@@ -459,17 +481,7 @@ class NFilteringMask(VoxelFeature):
     def compute(self, grid, **kwargs) -> np.ndarray:
         if grid.PC.n_filtering_mask.size == 0 or grid._inverse is None:
             return np.zeros(len(grid), dtype=np.int64)
-        labels = np.zeros(len(grid), dtype=np.int64)
-        for vid in range(len(grid)):
-            mask = (grid._inverse == vid)
-            if not np.any(mask):
-                continue
-            oci = grid.PC.n_filtering_mask[mask].astype(np.int64, copy=False)
-            if oci.size == 0:
-                continue
-            bc = np.bincount(oci)
-            labels[vid] = int(bc.argmax())
-        return labels
+        return _mode_per_voxel_int(grid._inverse, grid.PC.n_filtering_mask, len(grid), default=0)
 
 
 class ExpandFilteringMask(VoxelFeature):
@@ -480,17 +492,7 @@ class ExpandFilteringMask(VoxelFeature):
     def compute(self, grid, **kwargs) -> np.ndarray:
         if grid.PC.expand_filtering_mask.size == 0 or grid._inverse is None:
             return np.zeros(len(grid), dtype=np.int64)
-        labels = np.zeros(len(grid), dtype=np.int64)
-        for vid in range(len(grid)):
-            mask = (grid._inverse == vid)
-            if not np.any(mask):
-                continue
-            oci = grid.PC.expand_filtering_mask[mask].astype(np.int64, copy=False)
-            if oci.size == 0:
-                continue
-            bc = np.bincount(oci)
-            labels[vid] = int(bc.argmax())
-        return labels
+        return _mode_per_voxel_int(grid._inverse, grid.PC.expand_filtering_mask, len(grid), default=0)
 
 
 class DistanceToPrevLayer(VoxelFeature):

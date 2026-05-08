@@ -7,6 +7,7 @@ from .features import registry as _feature_registry  # реестр фич
 from . import features as _features_pkg  # noqa: F401 - подтягивает встроенные фичи (регистрация по импорту)
 # Явно подтягиваем модуль builtin, чтобы гарантировать регистрацию всех встроенных признаков
 from .features import builtin as _builtin  # noqa: F401
+from ..utils.timer import Timer
 
 
 class VOXELGRIDFEATURES:
@@ -391,14 +392,183 @@ class VOXELGRIDFEATURES:
         df.insert(0, 'x', idx_all[idx, 0])
         return df
 
-    # @staticmethod
-    # def from_df(df: pd.DataFrame, voxel_size: float) -> 'VOXELGRIDFEATURES':
-    #     """
-    #     Создать VOXELGRIDFEATURES из DataFrame.
-    #     """
-    #     voxels = []
-    #     for i in range(len(df)):
-    #         idx_tuple = (int(df.iloc[i]['x']), int(df.iloc[i]['y']), int(df.iloc[i]['z']))
-    #         voxel = VOXEL(idx_tuple)
-    #         voxels.append(voxel)
-    #     return VOXELGRIDFEATURES(None, voxel_size, voxels)
+    # -------- Визуализация (как в PCD, но для вокселей) --------
+    def _normalize_01(self, values: np.ndarray) -> np.ndarray:
+        """Нормализация массива к диапазону [0, 1] с защитой от констант/NaN."""
+        v = np.asarray(values, dtype=np.float64)
+        if v.size == 0:
+            return v
+        v = np.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
+        vmin = float(v.min())
+        vmax = float(v.max())
+        denom = (vmax - vmin)
+        if denom > 1e-12:
+            return (v - vmin) / denom
+        return np.zeros_like(v, dtype=np.float64)
+
+    def _get_voxel_scalar(self, name: str, component: int | None = None, force_recompute: bool = False, **kwargs) -> np.ndarray:
+        """
+        Вернуть скаляр длины N (число вокселей) для окраски.
+        - Если name есть в реестре фич: вычисляем (с кэшем) и берём компонент/норму при dim>1.
+        - Иначе пытаемся агрегировать одноимённый атрибут вокселей (mean по точкам, если это массив).
+        """
+        if len(self) == 0:
+            return np.zeros((0,), dtype=np.float64)
+
+        # 1) Фича из реестра
+        feat = _feature_registry.get(name) if name in _feature_registry.names() else None
+        if feat is not None:
+            if force_recompute or name not in self._features:
+                self.compute_features([name], apply_to_voxels=False, force_recompute=force_recompute, **kwargs)
+            arr = np.asarray(self._features.get(name))
+            if arr.ndim == 1:
+                return arr.astype(np.float64, copy=False)
+            # arr: (N, k)
+            if component is not None:
+                comp = int(component)
+                if comp < 0 or comp >= arr.shape[1]:
+                    raise ValueError(f"component={comp} вне диапазона [0, {arr.shape[1]-1}] для фичи '{name}'")
+                return arr[:, comp].astype(np.float64, copy=False)
+            # по умолчанию для векторных фич — L2-норма
+            return np.linalg.norm(arr.astype(np.float64, copy=False), axis=1)
+
+        # 2) Фолбэк: атрибуты вокселей (например, intensity/normals/...)
+        values = np.zeros((len(self),), dtype=np.float64)
+        for i, vx in enumerate(self.voxels):
+            if not hasattr(vx, name):
+                values[i] = 0.0
+                continue
+            v = getattr(vx, name)
+            if v is None:
+                values[i] = 0.0
+                continue
+            if isinstance(v, np.ndarray):
+                if v.size == 0:
+                    values[i] = 0.0
+                elif v.ndim == 1:
+                    values[i] = float(np.nanmean(v))
+                else:
+                    # Если это (M, k) (например, normals), берём норму среднего вектора либо компонент
+                    if component is not None and v.shape[1] > int(component):
+                        values[i] = float(np.nanmean(v[:, int(component)]))
+                    else:
+                        mean_vec = np.nanmean(v.astype(np.float64), axis=0)
+                        values[i] = float(np.linalg.norm(mean_vec))
+            else:
+                try:
+                    values[i] = float(v)
+                except Exception:
+                    values[i] = 0.0
+        return values
+
+    def _get_voxel_rgb(self) -> np.ndarray:
+        """Средний RGB по каждому вокселю (N,3) в диапазоне [0,1]."""
+        if len(self) == 0:
+            return np.zeros((0, 3), dtype=np.float64)
+        colors = np.zeros((len(self), 3), dtype=np.float64)
+        for i, vx in enumerate(self.voxels):
+            rgb = getattr(vx, "rgb", None)
+            if isinstance(rgb, np.ndarray) and rgb.size > 0:
+                if rgb.ndim == 1 and rgb.shape[0] == 3:
+                    c = rgb.astype(np.float64)
+                else:
+                    c = np.nanmean(rgb.astype(np.float64), axis=0)
+                if c.shape[0] >= 3:
+                    colors[i, :] = c[:3]
+        # в проекте rgb хранится как 0..255
+        colors = np.nan_to_num(colors, nan=0.0, posinf=0.0, neginf=0.0) / 255.0
+        colors = np.clip(colors, 0.0, 1.0)
+        return colors
+
+    def show(self, color_field: str = "intensity", labels=None, component: int | None = None, **kwargs) -> None:
+        """
+        Визуализация центров вокселей в Open3D.
+        - labels: если задано (len == N), раскрашивает по кластерам случайными цветами (как в PCD.show)
+        - color_field: 'rgb' или имя фичи из реестра (либо атрибут вокселя)
+        - component: компонент для векторных фич (иначе используется L2-норма)
+        kwargs прокидываются в вычисление фич (если color_field — фича).
+        """
+        import open3d as o3d
+
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(self.centers)
+
+        if labels is not None:
+            labels = np.asarray(labels)
+            if labels.shape[0] != len(self):
+                raise ValueError(f"labels должен иметь длину {len(self)}, получено {labels.shape[0]}")
+            unique_labels, inverse_indices = np.unique(labels, return_inverse=True)
+            num_unique_labels = len(unique_labels)
+            colors_for_labels = np.random.rand(num_unique_labels, 3)
+            noise_label_index = np.where(unique_labels == -1)[0]
+            if len(noise_label_index) > 0:
+                colors_for_labels[noise_label_index[0]] = [0.5, 0.5, 0.5]
+            colors = colors_for_labels[inverse_indices]
+            pcd.colors = o3d.utility.Vector3dVector(colors)
+        elif color_field == "rgb":
+            pcd.colors = o3d.utility.Vector3dVector(self._get_voxel_rgb())
+        else:
+            vals = self._get_voxel_scalar(color_field, component=component, **kwargs)
+            vals = self._normalize_01(vals)
+            colors = np.stack([vals, vals, vals], axis=1) if vals.size > 0 else np.zeros((0, 3), dtype=np.float64)
+            pcd.colors = o3d.utility.Vector3dVector(colors)
+
+        vis = o3d.visualization.Visualizer()
+        vis.create_window(visible=True)
+        vis.get_render_option().background_color = [0.25, 0.25, 0.25]
+        vis.add_geometry(pcd)
+        vis.run()
+
+    @Timer("Визуализация вокселей как gif")
+    def visual_gif(self, path_gif: str, zoom: float = 0.4, point_size: float = 6.0,
+                   color_field: str = "rgb", component: int | None = None, **kwargs) -> None:
+        """
+        Визуализировать центры вокселей как gif (PyVista) с цветовой схемой blue -> green -> yellow -> red.
+        color_field: 'rgb' или имя фичи/атрибута для окраски.
+        component: компонент для векторных фич.
+        kwargs прокидываются в вычисление фич.
+        """
+        import pyvista
+
+        cloud = pyvista.PointSet(self.centers)
+
+        def colormap_bgyr(values_01: np.ndarray) -> np.ndarray:
+            """Кастомная цветовая карта: blue -> green -> yellow -> red, values_01 в [0,1]."""
+            v = np.asarray(values_01, dtype=np.float64)
+            colors = np.zeros((v.shape[0], 3), dtype=np.float64)
+            for i, x in enumerate(v):
+                x = float(x)
+                if x <= 0.33:
+                    t = x / 0.33
+                    colors[i] = [0.0, t, 1.0 - t]
+                elif x <= 0.66:
+                    t = (x - 0.33) / (0.66 - 0.33)
+                    colors[i] = [t, 1.0, 0.0]
+                else:
+                    t = (x - 0.66) / (1.0 - 0.66)
+                    colors[i] = [1.0, 1.0 - t, 0.0]
+            return colors
+
+        if color_field == "rgb":
+            colors = self._get_voxel_rgb()
+        else:
+            vals = self._get_voxel_scalar(color_field, component=component, **kwargs)
+            vals = self._normalize_01(vals)
+            colors = colormap_bgyr(vals) if vals.size > 0 else np.zeros((0, 3), dtype=np.float64)
+
+        pl = pyvista.Plotter(off_screen=True)
+        pl.add_mesh(
+            cloud,
+            scalars=colors,
+            rgb=True,
+            opacity=1,
+            point_size=point_size,
+            show_scalar_bar=False,
+        )
+        pl.background_color = (0.5, 0.5, 0.5)
+        pl.show(auto_close=False)
+        pl.camera.zoom(zoom)
+        path = pl.generate_orbital_path(n_points=36, shift=cloud.length / 3, factor=3.0)
+        pl.open_gif(path_gif)
+        pl.orbit_on_path(path, write_frames=True)
+        pl.close()
