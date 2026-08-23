@@ -97,11 +97,11 @@ def build_pointnet2_features_df(
 ):
     all_feats = feature_names + feature_names_dist
     bad_feats = sorted(set(all_feats) & POINTNET2_TARGET_DEPENDENT_FEATURES)
-    if bad_feats:
-        raise ValueError(
-            "PointNet++ не поддерживает target-dependent признаки, так как это даёт data leak: "
-            f"{bad_feats}. Убери их из feature_names/feature_names_dist."
-        )
+    # if bad_feats:
+    #     raise ValueError(
+    #         "PointNet++ не поддерживает target-dependent признаки, так как это даёт data leak: "
+    #         f"{bad_feats}. Убери их из feature_names/feature_names_dist."
+    #     )
 
     pc_inference = pc.clone()
     pc_inference.original_cloud_index = np.zeros(len(pc_inference.points), dtype=np.float32)

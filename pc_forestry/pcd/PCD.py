@@ -14,6 +14,8 @@ from .fields import (
     Field, ScalarField, VectorField, ExpandFilteringMask
 )
 from .is_inside import is_inside_sm_parallel, parallelpointinpolygon, ray_tracing_numpy_numba, is_inside_postgis_parallel
+from .display_utils import apply_color_palette
+from typing import Literal
 
 
 class PCD:
@@ -578,7 +580,16 @@ class PCD:
                 self_field.data = np.concatenate((self_field.data, other_field.data), axis=0)
         self._create_properties()
 
-    def show(self, color_field: str = 'intensity', labels=None) -> None:
+    def show(
+        self,
+        color_field: str = 'intensity',
+        labels=None,
+        palette_name: Literal[
+            'Grey', 'Viridis', 'Brown > Yellow', 'Yellow > Brown', 'Topo landserf', 'High contrast',
+            'Cividis', 'Blue > White > Red', 'Red > Yellow', 'Blue > Green > Yellow > Red'
+        ] = 'Grey',
+        background_color: list[float] = [0.25, 0.25, 0.25]
+    ) -> None:
         """ show PCD object """
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(self.points)
@@ -611,16 +622,13 @@ class PCD:
             else:
                 field_values = np.zeros_like(field_values)
 
-            colors = np.zeros((field_values.shape[0], 3))
-            colors[:, 0] = field_values  # r
-            colors[:, 1] = field_values  # g
-            colors[:, 2] = field_values  # b
+            colors = apply_color_palette(field_values, palette_name)
             pcd.colors = o3d.utility.Vector3dVector(colors)
 
         # o3d.visualization.draw_geometries([pcd])
         vis = o3d.visualization.Visualizer()
         vis.create_window(visible=True)
-        vis.get_render_option().background_color = [0.25, 0.25, 0.25]
+        vis.get_render_option().background_color = background_color
         vis.add_geometry(pcd)
         vis.run()
 
